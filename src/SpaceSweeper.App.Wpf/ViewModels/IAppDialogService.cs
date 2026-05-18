@@ -4,6 +4,8 @@ public interface IAppDialogService
 {
     string? PickFolder(string initialPath);
 
+    string? PickSaveFile(string defaultFileName, string filter);
+
     bool Confirm(string title, string message);
 
     void ShowSettings(ScanSettings settings);

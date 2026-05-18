@@ -1,17 +1,21 @@
+using SpaceSweeper.Core.Scanning;
+
 namespace SpaceSweeper.App.Wpf.ViewModels;
 
 public sealed class ScanSettings : ObservableObject
 {
-    private int _maxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount, 2, 6);
-    private int _progressItemInterval = 256;
-    private int _snapshotItemInterval = 1024;
-    private int _snapshotMinimumIntervalMilliseconds = 350;
-    private int _maximumSnapshotChildren = 512;
+    private int _maxDegreeOfParallelism = ScanOptionDefaults.MaxDegreeOfParallelism;
+    private int _progressItemInterval = ScanOptionDefaults.ProgressItemInterval;
+    private int _snapshotItemInterval = ScanOptionDefaults.SnapshotItemInterval;
+    private int _snapshotMinimumIntervalMilliseconds = ScanOptionDefaults.SnapshotMinimumIntervalMilliseconds;
+    private int _maximumSnapshotChildren = ScanOptionDefaults.MaximumSnapshotChildren;
 
     public int MaxDegreeOfParallelism
     {
         get => _maxDegreeOfParallelism;
-        set => SetProperty(ref _maxDegreeOfParallelism, Math.Clamp(value, 1, 32));
+        set => SetProperty(
+            ref _maxDegreeOfParallelism,
+            Math.Clamp(value, ScanOptionDefaults.MinimumMaxDegreeOfParallelism, ScanOptionDefaults.MaximumMaxDegreeOfParallelism));
     }
 
     public int ProgressItemInterval
@@ -29,12 +33,32 @@ public sealed class ScanSettings : ObservableObject
     public int SnapshotMinimumIntervalMilliseconds
     {
         get => _snapshotMinimumIntervalMilliseconds;
-        set => SetProperty(ref _snapshotMinimumIntervalMilliseconds, Math.Clamp(value, 100, 5000));
+        set => SetProperty(
+            ref _snapshotMinimumIntervalMilliseconds,
+            Math.Clamp(
+                value,
+                ScanOptionDefaults.MinimumSnapshotIntervalMilliseconds,
+                ScanOptionDefaults.MaximumSnapshotIntervalMilliseconds));
     }
 
     public int MaximumSnapshotChildren
     {
         get => _maximumSnapshotChildren;
-        set => SetProperty(ref _maximumSnapshotChildren, Math.Clamp(value, 64, 5000));
+        set => SetProperty(
+            ref _maximumSnapshotChildren,
+            Math.Clamp(value, ScanOptionDefaults.MinimumSnapshotChildren, ScanOptionDefaults.MaximumSnapshotChildrenLimit));
+    }
+
+    public ScanOptions ToScanOptions(string rootPath)
+    {
+        return new ScanOptions(rootPath)
+        {
+            FollowReparsePoints = false,
+            ProgressItemInterval = ProgressItemInterval,
+            SnapshotItemInterval = SnapshotItemInterval,
+            SnapshotMinimumInterval = TimeSpan.FromMilliseconds(SnapshotMinimumIntervalMilliseconds),
+            MaximumSnapshotChildren = MaximumSnapshotChildren,
+            MaxDegreeOfParallelism = MaxDegreeOfParallelism
+        };
     }
 }

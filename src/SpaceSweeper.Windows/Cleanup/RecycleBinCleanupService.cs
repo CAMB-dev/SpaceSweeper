@@ -172,6 +172,11 @@ public sealed class RecycleBinCleanupService : ICleanupService
                 return false;
             }
 
+            if (!DirectoryContentsStillMatch(target, out reason))
+            {
+                return false;
+            }
+
             return true;
         }
 
@@ -202,6 +207,85 @@ public sealed class RecycleBinCleanupService : ICleanupService
 
         if (!IdentityStillMatches(target, out reason))
         {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool DirectoryContentsStillMatch(CleanupTarget target, out string reason)
+    {
+        reason = string.Empty;
+        if (target.FileCount == 0 && target.DirectoryCount == 0)
+        {
+            return true;
+        }
+
+        if (!TryMeasureDirectory(target.Path, out var currentLength, out var currentFileCount, out var currentDirectoryCount, out reason))
+        {
+            return false;
+        }
+
+        if (currentLength != target.Length)
+        {
+            reason = "Directory contents changed after preview.";
+            return false;
+        }
+
+        if (currentFileCount != target.FileCount || currentDirectoryCount != target.DirectoryCount)
+        {
+            reason = "Directory item counts changed after preview.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryMeasureDirectory(
+        string path,
+        out long length,
+        out int fileCount,
+        out int directoryCount,
+        out string reason)
+    {
+        length = 0;
+        fileCount = 0;
+        directoryCount = 1;
+        reason = string.Empty;
+
+        var pending = new Stack<string>();
+        pending.Push(path);
+
+        try
+        {
+            while (pending.Count > 0)
+            {
+                var directory = pending.Pop();
+                foreach (var child in Directory.EnumerateFileSystemEntries(directory))
+                {
+                    var attributes = File.GetAttributes(child);
+                    if (attributes.HasFlag(FileAttributes.ReparsePoint))
+                    {
+                        reason = "Directory contents changed to include a reparse point.";
+                        return false;
+                    }
+
+                    if (attributes.HasFlag(FileAttributes.Directory))
+                    {
+                        directoryCount++;
+                        pending.Push(child);
+                    }
+                    else
+                    {
+                        fileCount++;
+                        length += new FileInfo(child).Length;
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PathTooLongException or DirectoryNotFoundException)
+        {
+            reason = ex.Message;
             return false;
         }
 

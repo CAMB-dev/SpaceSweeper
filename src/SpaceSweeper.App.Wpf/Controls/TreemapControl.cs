@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using SpaceSweeper.Core.Analysis;
 using SpaceSweeper.Core.Scanning;
 using SpaceSweeper.Core.Utilities;
 using WpfBrush = System.Windows.Media.Brush;
@@ -32,6 +33,12 @@ public sealed class TreemapControl : FrameworkElement
         typeof(TreemapControl),
         new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
+    public static readonly DependencyProperty NodeVisibilityProperty = DependencyProperty.Register(
+        nameof(NodeVisibility),
+        typeof(StorageNodeVisibility),
+        typeof(TreemapControl),
+        new FrameworkPropertyMetadata(StorageNodeVisibility.Empty, FrameworkPropertyMetadataOptions.AffectsRender));
+
     private readonly List<(Rect Bounds, StorageNode Node)> _hits = [];
 
     public event EventHandler<StorageNode?>? NodeSelected;
@@ -48,6 +55,12 @@ public sealed class TreemapControl : FrameworkElement
     {
         get => (StorageNode?)GetValue(SelectedNodeProperty);
         set => SetValue(SelectedNodeProperty, value);
+    }
+
+    public StorageNodeVisibility NodeVisibility
+    {
+        get => (StorageNodeVisibility?)GetValue(NodeVisibilityProperty) ?? StorageNodeVisibility.Empty;
+        set => SetValue(NodeVisibilityProperty, value);
     }
 
     protected override void OnRender(DrawingContext drawingContext)
@@ -107,7 +120,9 @@ public sealed class TreemapControl : FrameworkElement
 
         budget--;
         _hits.Add((bounds, node));
-        var brush = new SolidColorBrush(GetColor(depth, node));
+        var tag = ResolveTag(node);
+        var fill = tag is null ? GetColor(depth, node) : GetTagColor(tag.Value);
+        var brush = new SolidColorBrush(fill);
         brush.Freeze();
 
         var selected = string.Equals(node.Path, SelectedNode?.Path, StringComparison.OrdinalIgnoreCase);
@@ -122,7 +137,7 @@ public sealed class TreemapControl : FrameworkElement
         if (hasVisibleChildren && bounds.Width >= 48 && bounds.Height >= 36)
         {
             var headerBounds = new Rect(bounds.X + 2, bounds.Y + 2, Math.Max(0, bounds.Width - 4), ContainerHeaderHeight);
-            DrawLabel(drawingContext, node, headerBounds, GetTextBrush(GetColor(depth, node)), includeSize: false);
+            DrawLabel(drawingContext, node, headerBounds, GetTextBrush(fill), includeSize: false);
             childrenBounds = new Rect(
                 bounds.X,
                 bounds.Y + ContainerHeaderHeight + 3,
@@ -131,7 +146,7 @@ public sealed class TreemapControl : FrameworkElement
         }
         else if (CanDrawInlineLabel(bounds))
         {
-            DrawLabel(drawingContext, node, bounds, GetTextBrush(GetColor(depth, node)), includeSize: bounds.Width >= 96 && bounds.Height >= 30);
+            DrawLabel(drawingContext, node, bounds, GetTextBrush(fill), includeSize: bounds.Width >= 96 && bounds.Height >= 30);
         }
 
         if (depth >= 5 || node.Children.Count == 0 || childrenBounds.Width * childrenBounds.Height < MinimumChildArea)
@@ -140,7 +155,7 @@ public sealed class TreemapControl : FrameworkElement
         }
 
         var children = node.Children
-            .Where(static child => child.Length > 0)
+            .Where(child => child.Length > 0 && NodeVisibility.IsSubtreeVisible(child))
             .Take(MaxChildrenPerNode)
             .ToArray();
 
@@ -238,5 +253,22 @@ public sealed class TreemapControl : FrameworkElement
             (byte)Math.Min(255, color.R + 255 * factor),
             (byte)Math.Min(255, color.G + 255 * factor),
             (byte)Math.Min(255, color.B + 255 * factor));
+    }
+
+    private StorageNodeTag? ResolveTag(StorageNode node)
+    {
+        return NodeVisibility.GetTag(node);
+    }
+
+    private static MediaColor GetTagColor(StorageNodeTag tag)
+    {
+        return tag switch
+        {
+            StorageNodeTag.Red => MediaColor.FromRgb(193, 67, 73),
+            StorageNodeTag.Yellow => MediaColor.FromRgb(194, 143, 35),
+            StorageNodeTag.Green => MediaColor.FromRgb(75, 140, 85),
+            StorageNodeTag.Blue => MediaColor.FromRgb(66, 117, 181),
+            _ => MediaColor.FromRgb(89, 104, 121)
+        };
     }
 }

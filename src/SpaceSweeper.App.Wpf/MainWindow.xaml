@@ -95,6 +95,50 @@
                      Background="#E6EBF0"
                      Foreground="#2D7D9A" />
 
+        <Border DockPanel.Dock="Top"
+                Background="#FFFFFF"
+                BorderBrush="#D9E0E7"
+                BorderThickness="0,0,0,1"
+                Padding="14,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+                           Text="{DynamicResource FilterLabel}"
+                           VerticalAlignment="Center"
+                           Margin="0,0,8,0" />
+                <TextBox Grid.Column="1"
+                         Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged}"
+                         Height="30"
+                         VerticalContentAlignment="Center"
+                         ToolTip="{DynamicResource FilterTooltip}" />
+                <Button Grid.Column="2"
+                        Content="{DynamicResource ApplyFilterButton}"
+                        Command="{Binding ApplyFilterCommand}"
+                        Height="30"
+                        MinWidth="72"
+                        Margin="8,0,0,0" />
+                <Button Grid.Column="3"
+                        Content="{DynamicResource ClearFilterButton}"
+                        Command="{Binding ClearFilterCommand}"
+                        Height="30"
+                        MinWidth="72"
+                        Margin="8,0,0,0" />
+                <Button Grid.Column="4"
+                        Content="{DynamicResource ExportButton}"
+                        Command="{Binding ExportCommand}"
+                        Height="30"
+                        MinWidth="84"
+                        Margin="8,0,0,0" />
+            </Grid>
+        </Border>
+
         <StatusBar DockPanel.Dock="Bottom"
                    Background="#FFFFFF"
                    BorderBrush="#D9E0E7"
@@ -168,6 +212,8 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0"
                                    Text="{DynamicResource TreemapTitle}"
@@ -180,18 +226,30 @@
                                    TextTrimming="CharacterEllipsis"
                                    VerticalAlignment="Center" />
                         <Button Grid.Column="2"
+                                Content="{DynamicResource BackButton}"
+                                Command="{Binding BackCommand}"
+                                MinWidth="72"
+                                Height="28"
+                                Margin="8,0,0,0" />
+                        <Button Grid.Column="3"
+                                Content="{DynamicResource ForwardButton}"
+                                Command="{Binding ForwardCommand}"
+                                MinWidth="72"
+                                Height="28"
+                                Margin="8,0,0,0" />
+                        <Button Grid.Column="4"
                                 Content="{DynamicResource EnterButton}"
                                 Command="{Binding EnterCommand}"
                                 MinWidth="72"
                                 Height="28"
                                 Margin="8,0,0,0" />
-                        <Button Grid.Column="3"
+                        <Button Grid.Column="5"
                                 Content="{DynamicResource UpButton}"
                                 Command="{Binding UpCommand}"
                                 MinWidth="72"
                                 Height="28"
                                 Margin="8,0,0,0" />
-                        <Button Grid.Column="4"
+                        <Button Grid.Column="6"
                                 Content="{DynamicResource RootButton}"
                                 Command="{Binding RootCommand}"
                                 MinWidth="72"
@@ -201,12 +259,22 @@
                     <controls:TreemapControl x:Name="Treemap"
                                              Root="{Binding ViewStorageNode}"
                                              SelectedNode="{Binding SelectedStorageNode}"
+                                             NodeVisibility="{Binding NodeVisibility}"
                                              MinHeight="320">
                         <controls:TreemapControl.ContextMenu>
                             <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                                 <MenuItem Header="{DynamicResource EnterButton}" Command="{Binding EnterCommand}" />
                                 <MenuItem Header="{DynamicResource UpButton}" Command="{Binding UpCommand}" />
                                 <MenuItem Header="{DynamicResource RootButton}" Command="{Binding RootCommand}" />
+                                <Separator />
+                                <MenuItem Header="{DynamicResource TagMenu}">
+                                    <MenuItem Header="{DynamicResource TagRed}" Command="{Binding TagRedCommand}" />
+                                    <MenuItem Header="{DynamicResource TagYellow}" Command="{Binding TagYellowCommand}" />
+                                    <MenuItem Header="{DynamicResource TagGreen}" Command="{Binding TagGreenCommand}" />
+                                    <MenuItem Header="{DynamicResource TagBlue}" Command="{Binding TagBlueCommand}" />
+                                    <Separator />
+                                    <MenuItem Header="{DynamicResource ClearTag}" Command="{Binding ClearTagCommand}" />
+                                </MenuItem>
                                 <Separator />
                                 <MenuItem Header="{DynamicResource CleanupButton}" Command="{Binding CleanupCommand}" />
                             </ContextMenu>
@@ -245,6 +313,15 @@
                                 <MenuItem Header="{DynamicResource UpButton}" Command="{Binding UpCommand}" />
                                 <MenuItem Header="{DynamicResource RootButton}" Command="{Binding RootCommand}" />
                                 <Separator />
+                                <MenuItem Header="{DynamicResource TagMenu}">
+                                    <MenuItem Header="{DynamicResource TagRed}" Command="{Binding TagRedCommand}" />
+                                    <MenuItem Header="{DynamicResource TagYellow}" Command="{Binding TagYellowCommand}" />
+                                    <MenuItem Header="{DynamicResource TagGreen}" Command="{Binding TagGreenCommand}" />
+                                    <MenuItem Header="{DynamicResource TagBlue}" Command="{Binding TagBlueCommand}" />
+                                    <Separator />
+                                    <MenuItem Header="{DynamicResource ClearTag}" Command="{Binding ClearTagCommand}" />
+                                </MenuItem>
+                                <Separator />
                                 <MenuItem Header="{DynamicResource CleanupButton}" Command="{Binding CleanupCommand}" />
                             </ContextMenu>
                         </DataGrid.ContextMenu>
@@ -255,6 +332,9 @@
                             <DataGridTextColumn Header="{DynamicResource SizeColumn}"
                                                 Binding="{Binding LengthText}"
                                                 Width="140" />
+                            <DataGridTextColumn Header="{DynamicResource TagColumn}"
+                                                Binding="{Binding TagText}"
+                                                Width="86" />
                             <DataGridTextColumn Header="{DynamicResource FilesColumn}"
                                                 Binding="{Binding FileCount}"
                                                 Width="100" />

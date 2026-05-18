@@ -1,6 +1,7 @@
 using System.Windows;
 using SpaceSweeper.App.Wpf.Localization;
 using SpaceSweeper.App.Wpf.ViewModels;
+using SaveFileDialog = Microsoft.Win32.SaveFileDialog;
 using WinForms = System.Windows.Forms;
 
 namespace SpaceSweeper.App.Wpf;
@@ -24,6 +25,20 @@ public sealed class WpfDialogService : IAppDialogService
         };
 
         return dialog.ShowDialog() == WinForms.DialogResult.OK ? dialog.SelectedPath : null;
+    }
+
+    public string? PickSaveFile(string defaultFileName, string filter)
+    {
+        var dialog = new SaveFileDialog
+        {
+            AddExtension = true,
+            DefaultExt = ".csv",
+            FileName = defaultFileName,
+            Filter = filter,
+            OverwritePrompt = true
+        };
+
+        return dialog.ShowDialog(_owner) == true ? dialog.FileName : null;
     }
 
     public bool Confirm(string title, string message)

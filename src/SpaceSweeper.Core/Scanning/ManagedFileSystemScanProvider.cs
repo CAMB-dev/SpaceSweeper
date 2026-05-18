@@ -441,7 +441,7 @@ public sealed class ManagedFileSystemScanProvider : IStorageScanProvider
             var children = _children
                 .OrderByDescending(static child => child.Length)
                 .ThenBy(static child => child.Kind)
-                .ThenBy(static child => StorageNode.GetDisplayName(child.Path), StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(static child => StorageNode.GetDisplayName(child.Path), StringComparer.OrdinalIgnoreCase)
                 .Take(maxChildrenPerNode)
                 .Select(child => child.ToStorageNode(maxChildrenPerNode))
                 .ToArray();

@@ -6,13 +6,14 @@ public sealed record ScanOptions(string RootPath)
 
     public bool FollowReparsePoints { get; init; }
 
-    public int ProgressItemInterval { get; init; } = 256;
+    public int ProgressItemInterval { get; init; } = ScanOptionDefaults.ProgressItemInterval;
 
-    public int SnapshotItemInterval { get; init; } = 1024;
+    public int SnapshotItemInterval { get; init; } = ScanOptionDefaults.SnapshotItemInterval;
 
-    public TimeSpan SnapshotMinimumInterval { get; init; } = TimeSpan.FromMilliseconds(350);
+    public TimeSpan SnapshotMinimumInterval { get; init; } =
+        TimeSpan.FromMilliseconds(ScanOptionDefaults.SnapshotMinimumIntervalMilliseconds);
 
-    public int MaximumSnapshotChildren { get; init; } = 512;
+    public int MaximumSnapshotChildren { get; init; } = ScanOptionDefaults.MaximumSnapshotChildren;
 
-    public int MaxDegreeOfParallelism { get; init; } = Math.Clamp(Environment.ProcessorCount, 2, 6);
+    public int MaxDegreeOfParallelism { get; init; } = ScanOptionDefaults.MaxDegreeOfParallelism;
 }

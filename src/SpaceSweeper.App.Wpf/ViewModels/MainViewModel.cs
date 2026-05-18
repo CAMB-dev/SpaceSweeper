@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Text;
 using SpaceSweeper.App.Wpf.Localization;
+using SpaceSweeper.Core.Analysis;
 using SpaceSweeper.Core.Cleanup;
 using SpaceSweeper.Core.Scanning;
 using SpaceSweeper.Core.Utilities;
@@ -13,8 +15,12 @@ public sealed class MainViewModel : ObservableObject
     private readonly ICleanupService _cleanupService;
     private readonly IAppDialogService _dialogs;
     private readonly ITextProvider _text;
+    private readonly Dictionary<string, StorageNodeTag> _nodeTags = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Stack<string> _backStack = new();
+    private readonly Stack<string> _forwardStack = new();
     private CancellationTokenSource? _scanCancellation;
     private string _rootPath;
+    private string _filterText = string.Empty;
     private string _statusText;
     private bool _isScanning;
     private double _progressValue;
@@ -28,6 +34,11 @@ public sealed class MainViewModel : ObservableObject
     private LanguageOption _selectedLanguage;
     private bool _updatingDriveSelection;
     private bool _isCleaning;
+    private bool _isExporting;
+    private StorageNodeFilter _filter = StorageNodeFilter.Empty;
+    private StorageNodeVisibility _visibility = StorageNodeVisibility.Empty;
+    private IReadOnlyDictionary<string, StorageNodeTag> _nodeTagSnapshot =
+        new ReadOnlyDictionary<string, StorageNodeTag>(new Dictionary<string, StorageNodeTag>(StringComparer.OrdinalIgnoreCase));
     private DateTimeOffset _lastUiProgressUpdate = DateTimeOffset.MinValue;
 
     public MainViewModel(
@@ -49,11 +60,21 @@ public sealed class MainViewModel : ObservableObject
         BrowseCommand = new RelayCommand(Browse, () => !IsScanning && !IsCleaning);
         ScanCommand = new RelayCommand(ScanAsync, CanScan);
         CancelCommand = new RelayCommand(Cancel, () => IsScanning);
-        CleanupCommand = new RelayCommand(CleanupAsync, () => SelectedNode is not null && !IsScanning && !IsCleaning);
+        CleanupCommand = new RelayCommand(CleanupAsync, CanCleanupSelectedNode);
         SettingsCommand = new RelayCommand(() => _dialogs.ShowSettings(Settings), () => !IsScanning && !IsCleaning);
         EnterCommand = new RelayCommand(EnterSelectedNode, CanEnterSelectedNode);
+        BackCommand = new RelayCommand(GoBack, () => _backStack.Count > 0);
+        ForwardCommand = new RelayCommand(GoForward, () => _forwardStack.Count > 0);
         UpCommand = new RelayCommand(GoUp, CanGoUp);
         RootCommand = new RelayCommand(GoRoot, () => RootNode is not null && ViewNode is not null && !IsSameNode(RootNode, ViewNode));
+        ApplyFilterCommand = new RelayCommand(ApplyFilter, () => RootNode is not null);
+        ClearFilterCommand = new RelayCommand(ClearFilter, () => RootNode is not null && Filter.HasCriteria);
+        ExportCommand = new RelayCommand(ExportCurrentViewAsync, () => ViewNode is not null && !IsScanning && !IsCleaning && !IsExporting);
+        TagRedCommand = new RelayCommand(() => SetSelectedTag(StorageNodeTag.Red), CanTagSelectedNode);
+        TagYellowCommand = new RelayCommand(() => SetSelectedTag(StorageNodeTag.Yellow), CanTagSelectedNode);
+        TagGreenCommand = new RelayCommand(() => SetSelectedTag(StorageNodeTag.Green), CanTagSelectedNode);
+        TagBlueCommand = new RelayCommand(() => SetSelectedTag(StorageNodeTag.Blue), CanTagSelectedNode);
+        ClearTagCommand = new RelayCommand(ClearSelectedTag, () => IsNodeVisible(SelectedNode) && ResolveTag(SelectedNode!.Node) is not null);
         LoadAvailableDrives();
         SelectDriveForRootPath();
     }
@@ -78,9 +99,29 @@ public sealed class MainViewModel : ObservableObject
 
     public RelayCommand EnterCommand { get; }
 
+    public RelayCommand BackCommand { get; }
+
+    public RelayCommand ForwardCommand { get; }
+
     public RelayCommand UpCommand { get; }
 
     public RelayCommand RootCommand { get; }
+
+    public RelayCommand ApplyFilterCommand { get; }
+
+    public RelayCommand ClearFilterCommand { get; }
+
+    public RelayCommand ExportCommand { get; }
+
+    public RelayCommand TagRedCommand { get; }
+
+    public RelayCommand TagYellowCommand { get; }
+
+    public RelayCommand TagGreenCommand { get; }
+
+    public RelayCommand TagBlueCommand { get; }
+
+    public RelayCommand ClearTagCommand { get; }
 
     public string RootPath
     {
@@ -94,6 +135,31 @@ public sealed class MainViewModel : ObservableObject
             }
         }
     }
+
+    public string FilterText
+    {
+        get => _filterText;
+        set => SetProperty(ref _filterText, value);
+    }
+
+    public StorageNodeFilter Filter
+    {
+        get => _filter;
+        private set
+        {
+            if (!ReferenceEquals(_filter, value))
+            {
+                _filter = value;
+                RebuildVisibility();
+                OnPropertyChanged();
+                ClearFilterCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public IReadOnlyDictionary<string, StorageNodeTag> NodeTags => _nodeTagSnapshot;
+
+    public StorageNodeVisibility NodeVisibility => _visibility;
 
     public DriveOption? SelectedDrive
     {
@@ -127,6 +193,7 @@ public sealed class MainViewModel : ObservableObject
                 CancelCommand.NotifyCanExecuteChanged();
                 CleanupCommand.NotifyCanExecuteChanged();
                 SettingsCommand.NotifyCanExecuteChanged();
+                ExportCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -142,6 +209,21 @@ public sealed class MainViewModel : ObservableObject
                 ScanCommand.NotifyCanExecuteChanged();
                 CleanupCommand.NotifyCanExecuteChanged();
                 SettingsCommand.NotifyCanExecuteChanged();
+                ExportCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsExporting
+    {
+        get => _isExporting;
+        private set
+        {
+            if (SetProperty(ref _isExporting, value))
+            {
+                BrowseCommand.NotifyCanExecuteChanged();
+                ScanCommand.NotifyCanExecuteChanged();
+                ExportCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -160,6 +242,8 @@ public sealed class MainViewModel : ObservableObject
             if (SetProperty(ref _rootNode, value))
             {
                 OnPropertyChanged(nameof(RootStorageNode));
+                ApplyFilterCommand.NotifyCanExecuteChanged();
+                ClearFilterCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -177,8 +261,11 @@ public sealed class MainViewModel : ObservableObject
                 OnPropertyChanged(nameof(ViewPath));
                 OnPropertyChanged(nameof(SelectedChildren));
                 SyncSelectedChildToView();
+                BackCommand.NotifyCanExecuteChanged();
+                ForwardCommand.NotifyCanExecuteChanged();
                 UpCommand.NotifyCanExecuteChanged();
                 RootCommand.NotifyCanExecuteChanged();
+                ExportCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -198,6 +285,11 @@ public sealed class MainViewModel : ObservableObject
                 SyncSelectedChildToView();
                 CleanupCommand.NotifyCanExecuteChanged();
                 EnterCommand.NotifyCanExecuteChanged();
+                TagRedCommand.NotifyCanExecuteChanged();
+                TagYellowCommand.NotifyCanExecuteChanged();
+                TagGreenCommand.NotifyCanExecuteChanged();
+                TagBlueCommand.NotifyCanExecuteChanged();
+                ClearTagCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -242,7 +334,7 @@ public sealed class MainViewModel : ObservableObject
 
     public void SelectNode(StorageNode node)
     {
-        SelectedNode = new StorageNodeViewModel(node);
+        SelectedNode = CreateNode(node);
     }
 
     public void EnterSelectedNode()
@@ -252,8 +344,7 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        ViewNode = SelectedNode;
-        SelectedNode = ViewNode;
+        NavigateTo(SelectedNode, recordHistory: true);
     }
 
     private void Browse()
@@ -280,24 +371,18 @@ public sealed class MainViewModel : ObservableObject
         RootNode = null;
         ViewNode = null;
         SelectedNode = null;
+        _nodeTags.Clear();
+        RefreshTagSnapshot();
+        ClearNavigationHistory();
         StatusText = _text.Get("StatusPreparing");
 
         try
         {
             _scanCancellation = new CancellationTokenSource();
             var progress = new Progress<ScanProgress>(progress => OnScanProgressChanged(scanGeneration, progress));
-            var result = await _scanner.ScanAsync(new ScanOptions(RootPath)
-            {
-                FollowReparsePoints = false,
-                ProgressItemInterval = Settings.ProgressItemInterval,
-                SnapshotItemInterval = Settings.SnapshotItemInterval,
-                SnapshotMinimumInterval = TimeSpan.FromMilliseconds(Settings.SnapshotMinimumIntervalMilliseconds),
-                MaximumSnapshotChildren = Settings.MaximumSnapshotChildren,
-                MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism
-            }, progress, _scanCancellation.Token).ConfigureAwait(true);
+            var result = await _scanner.ScanAsync(Settings.ToScanOptions(RootPath), progress, _scanCancellation.Token).ConfigureAwait(true);
             _activeScanGeneration = 0;
-            var root = new StorageNodeViewModel(result.Root);
-            ReplaceRoot(root, preserveSelection: false);
+            ReplaceRoot(result.Root, preserveSelection: false);
             StatusText = string.Format(
                 _text.Get("StatusCompletedFormat"),
                 result.ProviderName,
@@ -340,7 +425,7 @@ public sealed class MainViewModel : ObservableObject
 
     private async Task CleanupAsync()
     {
-        if (SelectedNode is null || IsCleaning)
+        if (!CanCleanupSelectedNode())
         {
             return;
         }
@@ -348,7 +433,13 @@ public sealed class MainViewModel : ObservableObject
         IsCleaning = true;
         try
         {
-            var targets = new[] { CleanupTarget.FromNode(SelectedNode.Node) };
+            var selected = SelectedNode;
+            if (selected is null)
+            {
+                return;
+            }
+
+            var targets = new[] { CleanupTarget.FromNode(selected.Node) };
             var preview = await _cleanupService.PreviewAsync(targets).ConfigureAwait(true);
 
             if (!preview.CanExecute)
@@ -386,6 +477,9 @@ public sealed class MainViewModel : ObservableObject
                 RootNode = null;
                 ViewNode = null;
                 SelectedNode = null;
+                _nodeTags.Clear();
+                RefreshTagSnapshot();
+                ClearNavigationHistory();
                 StatusText = _text.Get("StatusRescanRequired");
             }
         }
@@ -411,6 +505,11 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
+        if (progress.SnapshotRoot is not null)
+        {
+            ReplaceRoot(progress.SnapshotRoot, preserveSelection: true);
+        }
+
         if (DateTimeOffset.UtcNow - _lastUiProgressUpdate < TimeSpan.FromMilliseconds(100))
         {
             return;
@@ -418,11 +517,6 @@ public sealed class MainViewModel : ObservableObject
 
         _lastUiProgressUpdate = DateTimeOffset.UtcNow;
         ProgressValue = progress.ItemsScanned % 100;
-
-        if (progress.SnapshotRoot is not null)
-        {
-            ReplaceRoot(new StorageNodeViewModel(progress.SnapshotRoot), preserveSelection: true);
-        }
 
         StatusText = string.Format(
             _text.Get("StatusScanningFormat"),
@@ -435,6 +529,7 @@ public sealed class MainViewModel : ObservableObject
     {
         return !IsScanning
             && !IsCleaning
+            && !IsExporting
             && !string.IsNullOrWhiteSpace(RootPath)
             && (Directory.Exists(RootPath) || File.Exists(RootPath));
     }
@@ -452,7 +547,22 @@ public sealed class MainViewModel : ObservableObject
 
     private bool CanEnterSelectedNode()
     {
-        return SelectedNode?.Node.IsContainer == true;
+        return IsNodeVisible(SelectedNode) && SelectedNode!.Node.IsContainer;
+    }
+
+    private bool CanTagSelectedNode()
+    {
+        return IsNodeVisible(SelectedNode);
+    }
+
+    private bool CanCleanupSelectedNode()
+    {
+        if (SelectedNode is null || IsScanning || IsCleaning || IsExporting || !IsNodeVisible(SelectedNode))
+        {
+            return false;
+        }
+
+        return !Filter.HasCriteria || Filter.Matches(SelectedNode.Node, ResolveTag(SelectedNode.Node));
     }
 
     private bool CanGoUp()
@@ -474,8 +584,7 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        ViewNode = new StorageNodeViewModel(parent);
-        SelectedNode = ViewNode;
+        NavigateTo(CreateNode(parent), recordHistory: true);
     }
 
     private void GoRoot()
@@ -485,8 +594,92 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        ViewNode = RootNode;
-        SelectedNode = RootNode;
+        NavigateTo(RootNode, recordHistory: true);
+    }
+
+    private void GoBack()
+    {
+        NavigateHistory(_backStack, _forwardStack);
+    }
+
+    private void GoForward()
+    {
+        NavigateHistory(_forwardStack, _backStack);
+    }
+
+    private void ApplyFilter()
+    {
+        Filter = StorageNodeFilter.Compile(FilterText);
+        RefreshCurrentTree(preserveSelection: true);
+    }
+
+    private void ClearFilter()
+    {
+        FilterText = string.Empty;
+        Filter = StorageNodeFilter.Empty;
+        RefreshCurrentTree(preserveSelection: true);
+    }
+
+    private async Task ExportCurrentViewAsync()
+    {
+        if (ViewNode is null || IsExporting)
+        {
+            return;
+        }
+
+        IsExporting = true;
+        try
+        {
+            var fileName = MakeSafeFileName($"{ViewNode.Node.Name}-spacesweeper.csv");
+            var path = _dialogs.PickSaveFile(fileName, _text.Get("CsvReportFilter"));
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            var node = ViewNode.Node;
+            var filter = Filter;
+            var tags = _nodeTagSnapshot;
+            await Task.Run(() =>
+            {
+                using var writer = new StreamWriter(path, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+                StorageNodeReportExporter.WriteCsv(writer, node, filter, item => tags.TryGetValue(item.Path, out var tag) ? tag : null);
+            }).ConfigureAwait(true);
+
+            _dialogs.ShowInfo(_text.Get("ExportCompleteTitle"), _text.Get("ExportCompleteMessage"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            _dialogs.ShowError(_text.Get("ExportFailedTitle"), ex.Message);
+        }
+        finally
+        {
+            IsExporting = false;
+        }
+    }
+
+    private void SetSelectedTag(StorageNodeTag tag)
+    {
+        if (!IsNodeVisible(SelectedNode))
+        {
+            return;
+        }
+
+        _nodeTags[SelectedNode!.Node.Path] = tag;
+        RefreshTagSnapshot();
+        RefreshCurrentTree(preserveSelection: true);
+    }
+
+    private void ClearSelectedTag()
+    {
+        if (!IsNodeVisible(SelectedNode))
+        {
+            return;
+        }
+
+        _nodeTags.Remove(SelectedNode!.Node.Path);
+        RefreshTagSnapshot();
+        RefreshCurrentTree(preserveSelection: true);
     }
 
     private void SelectDriveForRootPath()
@@ -506,6 +699,106 @@ public sealed class MainViewModel : ObservableObject
         {
             _updatingDriveSelection = false;
         }
+    }
+
+    private StorageNodeViewModel CreateNode(StorageNode node)
+    {
+        return new StorageNodeViewModel(node, _visibility);
+    }
+
+    private StorageNodeTag? ResolveTag(StorageNode node)
+    {
+        return _nodeTagSnapshot.TryGetValue(node.Path, out var tag) ? tag : null;
+    }
+
+    private void RefreshTagSnapshot()
+    {
+        _nodeTagSnapshot = new ReadOnlyDictionary<string, StorageNodeTag>(
+            new Dictionary<string, StorageNodeTag>(_nodeTags, StringComparer.OrdinalIgnoreCase));
+        OnPropertyChanged(nameof(NodeTags));
+        RebuildVisibility();
+    }
+
+    private void RebuildVisibility()
+    {
+        var tags = _nodeTagSnapshot;
+        _visibility = new StorageNodeVisibility(Filter, node => tags.TryGetValue(node.Path, out var tag) ? tag : null);
+        OnPropertyChanged(nameof(NodeVisibility));
+    }
+
+    private bool IsNodeVisible(StorageNodeViewModel? node)
+    {
+        if (node is null)
+        {
+            return false;
+        }
+
+        return (RootNode is not null && IsSameNode(RootNode, node)) || _visibility.IsSubtreeVisible(node.Node);
+    }
+
+    private void RefreshCurrentTree(bool preserveSelection)
+    {
+        if (RootNode is null)
+        {
+            return;
+        }
+
+        ReplaceRoot(RootNode.Node, preserveSelection);
+    }
+
+    private void NavigateTo(StorageNodeViewModel node, bool recordHistory)
+    {
+        if (recordHistory && ViewNode is not null && !IsSameNode(ViewNode, node))
+        {
+            _backStack.Push(ViewNode.Node.Path);
+            _forwardStack.Clear();
+        }
+
+        ViewNode = node;
+        SelectedNode = ViewNode;
+        BackCommand.NotifyCanExecuteChanged();
+        ForwardCommand.NotifyCanExecuteChanged();
+    }
+
+    private void NavigateHistory(Stack<string> source, Stack<string> destination)
+    {
+        if (RootNode is null || ViewNode is null || source.Count == 0)
+        {
+            return;
+        }
+
+        while (source.Count > 0)
+        {
+            var targetPath = source.Pop();
+            var target = FindStorageNode(RootNode.Node, targetPath);
+            if (target is null || !_visibility.IsSubtreeVisible(target))
+            {
+                continue;
+            }
+
+            destination.Push(ViewNode.Node.Path);
+            ViewNode = CreateNode(target);
+            SelectedNode = ViewNode;
+            break;
+        }
+
+        BackCommand.NotifyCanExecuteChanged();
+        ForwardCommand.NotifyCanExecuteChanged();
+    }
+
+    private void ClearNavigationHistory()
+    {
+        _backStack.Clear();
+        _forwardStack.Clear();
+        BackCommand.NotifyCanExecuteChanged();
+        ForwardCommand.NotifyCanExecuteChanged();
+    }
+
+    private static string MakeSafeFileName(string fileName)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var safe = new string(fileName.Select(character => invalid.Contains(character) ? '_' : character).ToArray());
+        return string.IsNullOrWhiteSpace(safe) ? "spacesweeper-report.csv" : safe;
     }
 
     private static StorageNode? FindStorageNode(StorageNode? current, string path)
@@ -547,23 +840,73 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void ReplaceRoot(StorageNodeViewModel root, bool preserveSelection)
+    private void ReplaceRoot(StorageNode rootNode, bool preserveSelection)
     {
         var selectedPath = preserveSelection ? SelectedNode?.Node.Path : null;
         var viewPath = ViewNode?.Node.Path;
-        var previousViewNode = ViewNode;
-        var previousSelectedNode = SelectedNode;
+        var root = CreateNode(rootNode);
         RootNode = root;
         RootItems.Clear();
         RootItems.Add(root);
-        var viewStorageNode = viewPath is null ? null : FindStorageNode(root.Node, viewPath);
-        ViewNode = viewStorageNode is null
-            ? (preserveSelection && previousViewNode is not null ? previousViewNode : root)
-            : new StorageNodeViewModel(viewStorageNode);
-        var selectedStorageNode = selectedPath is null ? null : FindStorageNode(root.Node, selectedPath);
-        SelectedNode = selectedStorageNode is null
-            ? (preserveSelection && previousSelectedNode is not null ? previousSelectedNode : ViewNode)
-            : new StorageNodeViewModel(selectedStorageNode);
+        var viewStorageNode = preserveSelection && viewPath is not null
+            ? FindNearestVisibleStorageNode(rootNode, viewPath)
+            : rootNode;
+        ViewNode = viewStorageNode is null ? root : CreateNode(viewStorageNode);
+        var selectedStorageNode = selectedPath is null ? null : FindStorageNode(rootNode, selectedPath);
+        SelectedNode = selectedStorageNode is not null && _visibility.IsSubtreeVisible(selectedStorageNode)
+            ? CreateNode(selectedStorageNode)
+            : ViewNode;
+        PruneNavigationHistory(rootNode);
+    }
+
+    private StorageNode? FindNearestVisibleStorageNode(StorageNode root, string path)
+    {
+        var currentPath = path;
+        while (!string.IsNullOrWhiteSpace(currentPath))
+        {
+            var node = FindStorageNode(root, currentPath);
+            if (node is not null && (string.Equals(node.Path, root.Path, StringComparison.OrdinalIgnoreCase) || _visibility.IsSubtreeVisible(node)))
+            {
+                return node;
+            }
+
+            var trimmed = currentPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var parent = Path.GetDirectoryName(trimmed);
+            if (string.IsNullOrWhiteSpace(parent) || string.Equals(parent, currentPath, StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            currentPath = parent;
+        }
+
+        return root;
+    }
+
+    private void PruneNavigationHistory(StorageNode root)
+    {
+        PruneNavigationHistory(root, _backStack);
+        PruneNavigationHistory(root, _forwardStack);
+        BackCommand.NotifyCanExecuteChanged();
+        ForwardCommand.NotifyCanExecuteChanged();
+    }
+
+    private void PruneNavigationHistory(StorageNode root, Stack<string> history)
+    {
+        var validPaths = history
+            .Reverse()
+            .Where(path =>
+            {
+                var node = FindStorageNode(root, path);
+                return node is not null && _visibility.IsSubtreeVisible(node);
+            })
+            .ToArray();
+
+        history.Clear();
+        foreach (var path in validPaths)
+        {
+            history.Push(path);
+        }
     }
 
     private static StorageNode? FindParentStorageNode(StorageNode current, string childPath)

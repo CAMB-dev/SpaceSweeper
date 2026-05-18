@@ -89,6 +89,34 @@ public sealed class RecycleBinCleanupServiceTests
         }
     }
 
+    [Fact]
+    public async Task CleanupAsync_FailsWhenDirectoryContentsChangeAfterPreview()
+    {
+        var service = new RecycleBinCleanupService(new BlockingPolicy());
+        var root = Path.Combine(Path.GetTempPath(), "SpaceSweeper.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        await File.WriteAllTextAsync(Path.Combine(root, "before.bin"), "1234");
+
+        try
+        {
+            var target = new CleanupTarget(root, StorageNodeKind.Directory, 4, FileAttributes.Directory, FileCount: 1, DirectoryCount: 1);
+            var preview = await service.PreviewAsync(new[] { target });
+            Assert.Single(preview.AllowedItems);
+
+            await File.WriteAllTextAsync(Path.Combine(root, "after.bin"), "5678");
+
+            var result = await service.CleanupAsync(preview.AllowedItems);
+
+            Assert.Equal(0, result.CompletedCount);
+            Assert.Single(result.Failures);
+            Assert.True(Directory.Exists(root));
+        }
+        finally
+        {
+            DeleteDirectoryWithRetry(root);
+        }
+    }
+
     private sealed class BlockingPolicy : IProtectedPathPolicy
     {
         public ProtectedPathDecision Evaluate(string path)
