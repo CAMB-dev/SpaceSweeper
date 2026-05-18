@@ -90,7 +90,7 @@
                      Height="5"
                      Minimum="0"
                      Maximum="100"
-                     Value="{Binding ProgressValue}"
+                     Value="{Binding ProgressValue, Mode=OneWay}"
                      IsIndeterminate="{Binding IsScanning}"
                      Background="#E6EBF0"
                      Foreground="#2D7D9A" />
