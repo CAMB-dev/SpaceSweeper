@@ -20,7 +20,9 @@
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
@@ -32,36 +34,49 @@
                            Text="{DynamicResource PathLabel}"
                            VerticalAlignment="Center"
                            Margin="0,0,8,0" />
-                <TextBox Grid.Column="1"
+                <ComboBox Grid.Column="1"
+                          ItemsSource="{Binding AvailableDrives}"
+                          SelectedItem="{Binding SelectedDrive, Mode=TwoWay}"
+                          DisplayMemberPath="DisplayName"
+                          Height="32"
+                          Width="170"
+                          Margin="0,0,8,0" />
+                <TextBox Grid.Column="2"
                          Text="{Binding RootPath, UpdateSourceTrigger=PropertyChanged}"
                          MinWidth="360"
                          Height="32"
                          VerticalContentAlignment="Center" />
-                <Button Grid.Column="2"
+                <Button Grid.Column="3"
                         Content="{DynamicResource BrowseButton}"
                         Command="{Binding BrowseCommand}"
                         Height="32"
                         MinWidth="84"
                         Margin="8,0,0,0" />
-                <Button Grid.Column="3"
+                <Button Grid.Column="4"
                         Content="{DynamicResource ScanButton}"
                         Command="{Binding ScanCommand}"
                         Height="32"
                         MinWidth="84"
                         Margin="8,0,0,0" />
-                <Button Grid.Column="4"
+                <Button Grid.Column="5"
                         Content="{DynamicResource CancelButton}"
                         Command="{Binding CancelCommand}"
                         Height="32"
                         MinWidth="84"
                         Margin="8,0,0,0" />
-                <Button Grid.Column="5"
+                <Button Grid.Column="6"
                         Content="{DynamicResource CleanupButton}"
                         Command="{Binding CleanupCommand}"
                         Height="32"
                         MinWidth="92"
                         Margin="8,0,0,0" />
-                <ComboBox Grid.Column="6"
+                <Button Grid.Column="7"
+                        Content="{DynamicResource SettingsButton}"
+                        Command="{Binding SettingsCommand}"
+                        Height="32"
+                        MinWidth="84"
+                        Margin="8,0,0,0" />
+                <ComboBox Grid.Column="8"
                           ItemsSource="{Binding Languages}"
                           SelectedItem="{Binding SelectedLanguage}"
                           DisplayMemberPath="DisplayName"
@@ -70,6 +85,15 @@
                           Margin="12,0,0,0" />
             </Grid>
         </Border>
+
+        <ProgressBar DockPanel.Dock="Top"
+                     Height="5"
+                     Minimum="0"
+                     Maximum="100"
+                     Value="{Binding ProgressValue}"
+                     IsIndeterminate="{Binding IsScanning}"
+                     Background="#E6EBF0"
+                     Foreground="#2D7D9A" />
 
         <StatusBar DockPanel.Dock="Bottom"
                    Background="#FFFFFF"
@@ -136,14 +160,58 @@
                     CornerRadius="6"
                     Padding="10">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top"
-                               Text="{DynamicResource TreemapTitle}"
-                               FontWeight="SemiBold"
-                               Margin="0,0,0,8" />
+                    <Grid DockPanel.Dock="Top"
+                          Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Text="{DynamicResource TreemapTitle}"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,12,0" />
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding ViewPath}"
+                                   Foreground="#5D6976"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center" />
+                        <Button Grid.Column="2"
+                                Content="{DynamicResource EnterButton}"
+                                Command="{Binding EnterCommand}"
+                                MinWidth="72"
+                                Height="28"
+                                Margin="8,0,0,0" />
+                        <Button Grid.Column="3"
+                                Content="{DynamicResource UpButton}"
+                                Command="{Binding UpCommand}"
+                                MinWidth="72"
+                                Height="28"
+                                Margin="8,0,0,0" />
+                        <Button Grid.Column="4"
+                                Content="{DynamicResource RootButton}"
+                                Command="{Binding RootCommand}"
+                                MinWidth="72"
+                                Height="28"
+                                Margin="8,0,0,0" />
+                    </Grid>
                     <controls:TreemapControl x:Name="Treemap"
-                                             Root="{Binding RootStorageNode}"
+                                             Root="{Binding ViewStorageNode}"
                                              SelectedNode="{Binding SelectedStorageNode}"
-                                             MinHeight="320" />
+                                             MinHeight="320">
+                        <controls:TreemapControl.ContextMenu>
+                            <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                <MenuItem Header="{DynamicResource EnterButton}" Command="{Binding EnterCommand}" />
+                                <MenuItem Header="{DynamicResource UpButton}" Command="{Binding UpCommand}" />
+                                <MenuItem Header="{DynamicResource RootButton}" Command="{Binding RootCommand}" />
+                                <Separator />
+                                <MenuItem Header="{DynamicResource CleanupButton}" Command="{Binding CleanupCommand}" />
+                            </ContextMenu>
+                        </controls:TreemapControl.ContextMenu>
+                    </controls:TreemapControl>
                 </DockPanel>
             </Border>
 
@@ -161,6 +229,8 @@
                                Margin="0,0,0,8" />
                     <DataGrid ItemsSource="{Binding SelectedChildren}"
                               SelectedItem="{Binding SelectedChild, Mode=TwoWay}"
+                              MouseDoubleClick="OnChildGridMouseDoubleClick"
+                              PreviewMouseRightButtonDown="OnChildGridPreviewMouseRightButtonDown"
                               AutoGenerateColumns="False"
                               CanUserAddRows="False"
                               CanUserDeleteRows="False"
@@ -169,6 +239,15 @@
                               IsReadOnly="True"
                               HeadersVisibility="Column"
                               GridLinesVisibility="Horizontal">
+                        <DataGrid.ContextMenu>
+                            <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                <MenuItem Header="{DynamicResource EnterButton}" Command="{Binding EnterCommand}" />
+                                <MenuItem Header="{DynamicResource UpButton}" Command="{Binding UpCommand}" />
+                                <MenuItem Header="{DynamicResource RootButton}" Command="{Binding RootCommand}" />
+                                <Separator />
+                                <MenuItem Header="{DynamicResource CleanupButton}" Command="{Binding CleanupCommand}" />
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="{DynamicResource NameColumn}"
                                                 Binding="{Binding Name}"

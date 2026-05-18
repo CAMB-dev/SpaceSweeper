@@ -17,10 +17,15 @@ public sealed class MainViewModel : ObservableObject
     private string _rootPath;
     private string _statusText;
     private bool _isScanning;
+    private double _progressValue;
     private StorageNodeViewModel? _rootNode;
+    private StorageNodeViewModel? _viewNode;
     private StorageNodeViewModel? _selectedNode;
     private StorageNodeViewModel? _selectedChild;
+    private DriveOption? _selectedDrive;
     private LanguageOption _selectedLanguage;
+    private bool _updatingDriveSelection;
+    private DateTimeOffset _lastUiProgressUpdate = DateTimeOffset.MinValue;
 
     public MainViewModel(
         IStorageScanner scanner,
@@ -42,9 +47,19 @@ public sealed class MainViewModel : ObservableObject
         ScanCommand = new RelayCommand(ScanAsync, CanScan);
         CancelCommand = new RelayCommand(Cancel, () => IsScanning);
         CleanupCommand = new RelayCommand(CleanupAsync, () => SelectedNode is not null && !IsScanning);
+        SettingsCommand = new RelayCommand(() => _dialogs.ShowSettings(Settings), () => !IsScanning);
+        EnterCommand = new RelayCommand(EnterSelectedNode, CanEnterSelectedNode);
+        UpCommand = new RelayCommand(GoUp, CanGoUp);
+        RootCommand = new RelayCommand(GoRoot, () => RootNode is not null && ViewNode is not null && !IsSameNode(RootNode, ViewNode));
+        LoadAvailableDrives();
+        SelectDriveForRootPath();
     }
 
     public ObservableCollection<StorageNodeViewModel> RootItems { get; } = [];
+
+    public ObservableCollection<DriveOption> AvailableDrives { get; } = [];
+
+    public ScanSettings Settings { get; } = new();
 
     public IReadOnlyList<LanguageOption> Languages { get; }
 
@@ -56,6 +71,14 @@ public sealed class MainViewModel : ObservableObject
 
     public RelayCommand CleanupCommand { get; }
 
+    public RelayCommand SettingsCommand { get; }
+
+    public RelayCommand EnterCommand { get; }
+
+    public RelayCommand UpCommand { get; }
+
+    public RelayCommand RootCommand { get; }
+
     public string RootPath
     {
         get => _rootPath;
@@ -63,8 +86,23 @@ public sealed class MainViewModel : ObservableObject
         {
             if (SetProperty(ref _rootPath, value))
             {
+                SelectDriveForRootPath();
                 ScanCommand.NotifyCanExecuteChanged();
             }
+        }
+    }
+
+    public DriveOption? SelectedDrive
+    {
+        get => _selectedDrive;
+        set
+        {
+            if (!SetProperty(ref _selectedDrive, value) || value is null || _updatingDriveSelection)
+            {
+                return;
+            }
+
+            RootPath = value.RootPath;
         }
     }
 
@@ -85,8 +123,15 @@ public sealed class MainViewModel : ObservableObject
                 ScanCommand.NotifyCanExecuteChanged();
                 CancelCommand.NotifyCanExecuteChanged();
                 CleanupCommand.NotifyCanExecuteChanged();
+                SettingsCommand.NotifyCanExecuteChanged();
             }
         }
+    }
+
+    public double ProgressValue
+    {
+        get => _progressValue;
+        private set => SetProperty(ref _progressValue, value);
     }
 
     public StorageNodeViewModel? RootNode
@@ -103,6 +148,26 @@ public sealed class MainViewModel : ObservableObject
 
     public StorageNode? RootStorageNode => RootNode?.Node;
 
+    public StorageNodeViewModel? ViewNode
+    {
+        get => _viewNode;
+        private set
+        {
+            if (SetProperty(ref _viewNode, value))
+            {
+                OnPropertyChanged(nameof(ViewStorageNode));
+                OnPropertyChanged(nameof(ViewPath));
+                OnPropertyChanged(nameof(SelectedChildren));
+                UpCommand.NotifyCanExecuteChanged();
+                RootCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public StorageNode? ViewStorageNode => ViewNode?.Node;
+
+    public string ViewPath => ViewNode?.Node.Path ?? string.Empty;
+
     public StorageNodeViewModel? SelectedNode
     {
         get => _selectedNode;
@@ -115,6 +180,7 @@ public sealed class MainViewModel : ObservableObject
                 _selectedChild = null;
                 OnPropertyChanged(nameof(SelectedChild));
                 CleanupCommand.NotifyCanExecuteChanged();
+                EnterCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -122,7 +188,7 @@ public sealed class MainViewModel : ObservableObject
     public StorageNode? SelectedStorageNode => SelectedNode?.Node;
 
     public IEnumerable<StorageNodeViewModel> SelectedChildren =>
-        SelectedNode?.Children ?? Enumerable.Empty<StorageNodeViewModel>();
+        ViewNode?.Children ?? Enumerable.Empty<StorageNodeViewModel>();
 
     public StorageNodeViewModel? SelectedChild
     {
@@ -159,11 +225,18 @@ public sealed class MainViewModel : ObservableObject
 
     public void SelectNode(StorageNode node)
     {
-        var match = FindNode(RootNode, node.Path);
-        if (match is not null)
+        SelectedNode = new StorageNodeViewModel(node);
+    }
+
+    public void EnterSelectedNode()
+    {
+        if (!CanEnterSelectedNode() || SelectedNode is null)
         {
-            SelectedNode = match;
+            return;
         }
+
+        ViewNode = SelectedNode;
+        SelectedNode = ViewNode;
     }
 
     private void Browse()
@@ -185,6 +258,7 @@ public sealed class MainViewModel : ObservableObject
         IsScanning = true;
         RootItems.Clear();
         RootNode = null;
+        ViewNode = null;
         SelectedNode = null;
         StatusText = _text.Get("StatusPreparing");
 
@@ -195,12 +269,14 @@ public sealed class MainViewModel : ObservableObject
             var result = await _scanner.ScanAsync(new ScanOptions(RootPath)
             {
                 FollowReparsePoints = false,
-                ProgressItemInterval = 256
+                ProgressItemInterval = Settings.ProgressItemInterval,
+                SnapshotItemInterval = Settings.SnapshotItemInterval,
+                SnapshotMinimumInterval = TimeSpan.FromMilliseconds(Settings.SnapshotMinimumIntervalMilliseconds),
+                MaximumSnapshotChildren = Settings.MaximumSnapshotChildren,
+                MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism
             }, progress, _scanCancellation.Token).ConfigureAwait(true);
             var root = new StorageNodeViewModel(result.Root);
-            RootNode = root;
-            RootItems.Add(root);
-            SelectedNode = root;
+            ReplaceRoot(root, preserveSelection: false);
             StatusText = string.Format(
                 _text.Get("StatusCompletedFormat"),
                 result.ProviderName,
@@ -225,6 +301,7 @@ public sealed class MainViewModel : ObservableObject
             _scanCancellation = null;
 
             IsScanning = false;
+            ProgressValue = 0;
         }
     }
 
@@ -275,6 +352,7 @@ public sealed class MainViewModel : ObservableObject
         {
             RootItems.Clear();
             RootNode = null;
+            ViewNode = null;
             SelectedNode = null;
             StatusText = _text.Get("StatusRescanRequired");
         }
@@ -285,6 +363,19 @@ public sealed class MainViewModel : ObservableObject
         if (progress.Phase != ScanPhase.Scanning)
         {
             return;
+        }
+
+        if (DateTimeOffset.UtcNow - _lastUiProgressUpdate < TimeSpan.FromMilliseconds(100))
+        {
+            return;
+        }
+
+        _lastUiProgressUpdate = DateTimeOffset.UtcNow;
+        ProgressValue = progress.ItemsScanned % 100;
+
+        if (progress.SnapshotRoot is not null)
+        {
+            ReplaceRoot(new StorageNodeViewModel(progress.SnapshotRoot), preserveSelection: true);
         }
 
         StatusText = string.Format(
@@ -301,21 +392,90 @@ public sealed class MainViewModel : ObservableObject
             && (Directory.Exists(RootPath) || File.Exists(RootPath));
     }
 
-    private static StorageNodeViewModel? FindNode(StorageNodeViewModel? current, string path)
+    private void LoadAvailableDrives()
+    {
+        AvailableDrives.Clear();
+        foreach (var drive in DriveInfo.GetDrives().Where(static drive => drive.IsReady))
+        {
+            var freeSpace = SizeFormatter.FormatBytes(drive.AvailableFreeSpace);
+            var totalSpace = SizeFormatter.FormatBytes(drive.TotalSize);
+            AvailableDrives.Add(new DriveOption(drive.RootDirectory.FullName, $"{drive.RootDirectory.FullName}  {freeSpace} / {totalSpace}"));
+        }
+    }
+
+    private bool CanEnterSelectedNode()
+    {
+        return SelectedNode?.Node.IsContainer == true;
+    }
+
+    private bool CanGoUp()
+    {
+        return RootNode is not null && ViewNode is not null && !IsSameNode(RootNode, ViewNode);
+    }
+
+    private void GoUp()
+    {
+        if (!CanGoUp() || RootNode is null || ViewNode is null)
+        {
+            return;
+        }
+
+        var parent = FindParentStorageNode(RootNode.Node, ViewNode.Node.Path);
+        if (parent is null)
+        {
+            GoRoot();
+            return;
+        }
+
+        ViewNode = new StorageNodeViewModel(parent);
+        SelectedNode = ViewNode;
+    }
+
+    private void GoRoot()
+    {
+        if (RootNode is null)
+        {
+            return;
+        }
+
+        ViewNode = RootNode;
+        SelectedNode = RootNode;
+    }
+
+    private void SelectDriveForRootPath()
+    {
+        _updatingDriveSelection = true;
+        try
+        {
+            var root = Path.GetPathRoot(Path.GetFullPath(RootPath));
+            SelectedDrive = AvailableDrives.FirstOrDefault(drive =>
+                string.Equals(drive.RootPath, root, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            SelectedDrive = null;
+        }
+        finally
+        {
+            _updatingDriveSelection = false;
+        }
+    }
+
+    private static StorageNode? FindStorageNode(StorageNode? current, string path)
     {
         if (current is null)
         {
             return null;
         }
 
-        if (string.Equals(current.Node.Path, path, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(current.Path, path, StringComparison.OrdinalIgnoreCase))
         {
             return current;
         }
 
         foreach (var child in current.Children)
         {
-            var match = FindNode(child, path);
+            var match = FindStorageNode(child, path);
             if (match is not null)
             {
                 return match;
@@ -323,5 +483,42 @@ public sealed class MainViewModel : ObservableObject
         }
 
         return null;
+    }
+
+    private void ReplaceRoot(StorageNodeViewModel root, bool preserveSelection)
+    {
+        var selectedPath = preserveSelection ? SelectedNode?.Node.Path : null;
+        RootNode = root;
+        RootItems.Clear();
+        RootItems.Add(root);
+        var selectedStorageNode = selectedPath is null ? null : FindStorageNode(root.Node, selectedPath);
+        SelectedNode = selectedStorageNode is null ? root : new StorageNodeViewModel(selectedStorageNode);
+        var viewPath = ViewNode?.Node.Path;
+        var viewStorageNode = viewPath is null ? null : FindStorageNode(root.Node, viewPath);
+        ViewNode = viewStorageNode is null ? root : new StorageNodeViewModel(viewStorageNode);
+    }
+
+    private static StorageNode? FindParentStorageNode(StorageNode current, string childPath)
+    {
+        foreach (var child in current.Children)
+        {
+            if (string.Equals(child.Path, childPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return current;
+            }
+
+            var match = FindParentStorageNode(child, childPath);
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsSameNode(StorageNodeViewModel left, StorageNodeViewModel right)
+    {
+        return string.Equals(left.Node.Path, right.Node.Path, StringComparison.OrdinalIgnoreCase);
     }
 }

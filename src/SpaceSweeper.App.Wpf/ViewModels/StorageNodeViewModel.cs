@@ -6,6 +6,7 @@ namespace SpaceSweeper.App.Wpf.ViewModels;
 
 public sealed class StorageNodeViewModel
 {
+    private const int MaxVisibleChildren = 2000;
     private ObservableCollection<StorageNodeViewModel>? _children;
 
     public StorageNodeViewModel(StorageNode node)
@@ -30,8 +31,14 @@ public sealed class StorageNodeViewModel
         get
         {
             _children ??= new ObservableCollection<StorageNodeViewModel>(
-                Node.Children.Select(static child => new StorageNodeViewModel(child)));
+                Node.Children
+                    .Take(MaxVisibleChildren)
+                    .Select(static child => new StorageNodeViewModel(child)));
             return _children;
         }
     }
+
+    public int HiddenChildCount => Math.Max(0, Node.Children.Count - MaxVisibleChildren);
+
+    public bool HasHiddenChildren => HiddenChildCount > 0;
 }

@@ -14,6 +14,10 @@ namespace SpaceSweeper.App.Wpf.Controls;
 
 public sealed class TreemapControl : FrameworkElement
 {
+    private const int MaxRenderedNodes = 1800;
+    private const int MaxChildrenPerNode = 64;
+    private const double MinimumChildArea = 18;
+
     public static readonly DependencyProperty RootProperty = DependencyProperty.Register(
         nameof(Root),
         typeof(StorageNode),
@@ -29,6 +33,8 @@ public sealed class TreemapControl : FrameworkElement
     private readonly List<(Rect Bounds, StorageNode Node)> _hits = [];
 
     public event EventHandler<StorageNode?>? NodeSelected;
+
+    public event EventHandler<StorageNode?>? NodeActivated;
 
     public StorageNode? Root
     {
@@ -55,14 +61,24 @@ public sealed class TreemapControl : FrameworkElement
             return;
         }
 
-        DrawNode(drawingContext, Root, bounds, 0);
+        var budget = MaxRenderedNodes;
+        DrawNode(drawingContext, Root, bounds, 0, ref budget);
     }
 
     protected override void OnMouseDown(MouseButtonEventArgs e)
     {
         base.OnMouseDown(e);
+        SelectNodeAt(e.GetPosition(this), activate: e.ClickCount >= 2);
+    }
 
-        var point = e.GetPosition(this);
+    protected override void OnPreviewMouseRightButtonDown(MouseButtonEventArgs e)
+    {
+        base.OnPreviewMouseRightButtonDown(e);
+        SelectNodeAt(e.GetPosition(this), activate: false);
+    }
+
+    private void SelectNodeAt(WpfPoint point, bool activate)
+    {
         for (var index = _hits.Count - 1; index >= 0; index--)
         {
             var hit = _hits[index];
@@ -70,18 +86,24 @@ public sealed class TreemapControl : FrameworkElement
             {
                 SetCurrentValue(SelectedNodeProperty, hit.Node);
                 NodeSelected?.Invoke(this, hit.Node);
+                if (activate && hit.Node.IsContainer)
+                {
+                    NodeActivated?.Invoke(this, hit.Node);
+                }
+
                 return;
             }
         }
     }
 
-    private void DrawNode(DrawingContext drawingContext, StorageNode node, Rect bounds, int depth)
+    private void DrawNode(DrawingContext drawingContext, StorageNode node, Rect bounds, int depth, ref int budget)
     {
-        if (bounds.Width < 2 || bounds.Height < 2)
+        if (budget <= 0 || bounds.Width < 2 || bounds.Height < 2)
         {
             return;
         }
 
+        budget--;
         _hits.Add((bounds, node));
         var brush = new SolidColorBrush(GetColor(depth, node));
         brush.Freeze();
@@ -98,15 +120,14 @@ public sealed class TreemapControl : FrameworkElement
             DrawLabel(drawingContext, node, bounds);
         }
 
-        if (depth >= 5 || node.Children.Count == 0)
+        if (depth >= 5 || node.Children.Count == 0 || bounds.Width * bounds.Height < MinimumChildArea)
         {
             return;
         }
 
         var children = node.Children
             .Where(static child => child.Length > 0)
-            .OrderByDescending(static child => child.Length)
-            .Take(96)
+            .Take(MaxChildrenPerNode)
             .ToArray();
 
         if (children.Length == 0)
@@ -142,7 +163,7 @@ public sealed class TreemapControl : FrameworkElement
             }
 
             childBounds.Inflate(-1.5, -1.5);
-            DrawNode(drawingContext, child, childBounds, depth + 1);
+            DrawNode(drawingContext, child, childBounds, depth + 1, ref budget);
         }
     }
 

@@ -32,6 +32,16 @@ public sealed class WpfDialogService : IAppDialogService
             == MessageBoxResult.Yes;
     }
 
+    public void ShowSettings(ScanSettings settings)
+    {
+        var window = new SettingsWindow
+        {
+            Owner = _owner,
+            DataContext = settings
+        };
+        window.ShowDialog();
+    }
+
     public void ShowInfo(string title, string message)
     {
         System.Windows.MessageBox.Show(_owner, message, title, MessageBoxButton.OK, MessageBoxImage.Information);

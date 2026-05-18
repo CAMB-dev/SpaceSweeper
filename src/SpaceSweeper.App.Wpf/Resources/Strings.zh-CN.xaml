@@ -7,6 +7,17 @@
     <sys:String x:Key="ScanButton">扫描</sys:String>
     <sys:String x:Key="CancelButton">取消</sys:String>
     <sys:String x:Key="CleanupButton">清理</sys:String>
+    <sys:String x:Key="SettingsButton">设置</sys:String>
+    <sys:String x:Key="EnterButton">进入</sys:String>
+    <sys:String x:Key="UpButton">上一级</sys:String>
+    <sys:String x:Key="RootButton">根目录</sys:String>
+    <sys:String x:Key="SettingsTitle">设置</sys:String>
+    <sys:String x:Key="CloseButton">关闭</sys:String>
+    <sys:String x:Key="MaxWorkersLabel">并行 worker 数</sys:String>
+    <sys:String x:Key="ProgressIntervalLabel">进度刷新间隔（项）</sys:String>
+    <sys:String x:Key="SnapshotIntervalLabel">动态快照间隔（项）</sys:String>
+    <sys:String x:Key="SnapshotThrottleLabel">动态快照最小间隔（毫秒）</sys:String>
+    <sys:String x:Key="SnapshotChildrenLabel">每层快照最大节点数</sys:String>
     <sys:String x:Key="TreeTitle">目录树</sys:String>
     <sys:String x:Key="TreemapTitle">空间矩形图</sys:String>
     <sys:String x:Key="ChildrenTitle">当前目录内容</sys:String>

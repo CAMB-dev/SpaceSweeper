@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.Threading.Channels;
 
 namespace SpaceSweeper.Core.Scanning;
 
@@ -19,7 +21,7 @@ public sealed class ManagedFileSystemScanProvider : IStorageScanProvider
                 : StorageScanProviderStatus.Unavailable("The path does not exist or cannot be reached."));
     }
 
-    public Task<ScanResult> ScanAsync(
+    public async Task<ScanResult> ScanAsync(
         ScanOptions options,
         IProgress<ScanProgress> progress,
         CancellationToken cancellationToken = default)
@@ -28,11 +30,12 @@ public sealed class ManagedFileSystemScanProvider : IStorageScanProvider
         ArgumentNullException.ThrowIfNull(progress);
 
         var stopwatch = Stopwatch.StartNew();
-        var context = new ScanBuildContext(options, progress, Name);
+        var rootPath = Path.GetFullPath(options.RootPath);
+        var context = new ScanBuildContext(options with { RootPath = rootPath }, progress, Name);
 
         progress.Report(new ScanProgress(
-            options.RootPath,
-            options.RootPath,
+            rootPath,
+            rootPath,
             0,
             0,
             0,
@@ -40,130 +43,141 @@ public sealed class ManagedFileSystemScanProvider : IStorageScanProvider
             ScanPhase.Scanning,
             Name));
 
-        var root = ScanPath(options.RootPath, context, cancellationToken);
-        stopwatch.Stop();
-
-        progress.Report(new ScanProgress(
-            options.RootPath,
-            options.RootPath,
-            context.ItemsScanned,
-            context.BytesScanned,
-            context.DirectoriesScanned,
-            context.Errors.Count,
-            ScanPhase.Completed,
-            Name));
-
-        return Task.FromResult(new ScanResult(root, Name, stopwatch.Elapsed, context.Errors));
-    }
-
-    private static StorageNode ScanPath(
-        string path,
-        ScanBuildContext context,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        try
-        {
-            if (File.Exists(path))
-            {
-                return ScanFile(path, context);
-            }
-
-            return ScanDirectory(path, context, cancellationToken);
-        }
-        catch (Exception ex) when (IsExpectedFileSystemException(ex))
-        {
-            var error = CreateError(path, ex);
-            context.AddError(error);
-            return StorageNode.Directory(
-                path,
-                StorageNodeKind.Directory,
-                null,
-                FileAttributes.Directory,
-                Array.Empty<StorageNode>(),
-                new[] { error });
-        }
-    }
-
-    private static StorageNode ScanFile(string path, ScanBuildContext context)
-    {
-        var info = new FileInfo(path);
-        context.RecordItem(path, info.Length, isDirectory: false);
-        return StorageNode.File(path, info.Length, info.LastWriteTimeUtc, info.Attributes);
-    }
-
-    private static StorageNode ScanDirectory(
-        string path,
-        ScanBuildContext context,
-        CancellationToken cancellationToken)
-    {
-        var info = new DirectoryInfo(path);
-        var attributes = SafeGetAttributes(info, FileAttributes.Directory);
-        var isReparsePoint = attributes.HasFlag(FileAttributes.ReparsePoint);
-
-        context.RecordItem(path, 0, isDirectory: true);
-
-        if (isReparsePoint && !context.Options.FollowReparsePoints)
-        {
-            return StorageNode.Directory(
-                path,
-                GetDirectoryKind(path),
-                SafeGetLastWriteTime(info),
-                attributes,
-                Array.Empty<StorageNode>(),
-                Array.Empty<ScanError>());
-        }
-
-        var children = new List<StorageNode>();
-        var localErrors = new List<ScanError>();
-        var visitKey = context.Options.FollowReparsePoints ? GetDirectoryVisitKey(info) : null;
-
-        if (visitKey is not null && !context.TryEnterDirectory(visitKey))
-        {
-            var error = new ScanError(path, ScanErrorKind.Unsupported, "Directory cycle detected through a reparse point.");
-            localErrors.Add(error);
-            context.AddError(error);
-
-            return StorageNode.Directory(
-                path,
-                GetDirectoryKind(path),
-                SafeGetLastWriteTime(info),
-                attributes,
-                Array.Empty<StorageNode>(),
-                localErrors);
-        }
-
-        try
+        StorageNode root;
+        if (File.Exists(rootPath))
         {
             try
             {
-                foreach (var child in info.EnumerateFileSystemInfos())
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
+                root = ScanRootFile(rootPath, context);
+            }
+            catch (Exception ex) when (IsExpectedFileSystemException(ex))
+            {
+                var error = CreateError(rootPath, ex);
+                context.AddError(error);
+                root = new StorageNode(
+                    rootPath,
+                    StorageNode.GetDisplayName(rootPath),
+                    StorageNodeKind.File,
+                    0,
+                    null,
+                    0,
+                    0,
+                    null,
+                    0,
+                    Array.Empty<StorageNode>(),
+                    new[] { error });
+            }
+        }
+        else
+        {
+            var rootBuilder = CreateDirectoryBuilder(rootPath, parent: null);
+            await ScanDirectoryTreeAsync(rootBuilder, context, cancellationToken).ConfigureAwait(false);
+            root = rootBuilder.ToStorageNode(maxChildrenPerNode: int.MaxValue);
+        }
 
+        stopwatch.Stop();
+        progress.Report(new ScanProgress(
+            rootPath,
+            rootPath,
+            context.ItemsScanned,
+            context.BytesScanned,
+            context.DirectoriesScanned,
+            context.ErrorCount,
+            ScanPhase.Completed,
+            Name,
+            root));
+
+        return new ScanResult(root, Name, stopwatch.Elapsed, context.GetErrors());
+    }
+
+    private static StorageNode ScanRootFile(string path, ScanBuildContext context)
+    {
+        var info = new FileInfo(path);
+        context.RecordFile(path, info.Length);
+        return StorageNode.File(path, info.Length, info.LastWriteTimeUtc, info.Attributes);
+    }
+
+    private static async Task ScanDirectoryTreeAsync(
+        NodeBuilder root,
+        ScanBuildContext context,
+        CancellationToken cancellationToken)
+    {
+        var channel = Channel.CreateUnbounded<NodeBuilder>(new UnboundedChannelOptions
+        {
+            SingleReader = false,
+            SingleWriter = false
+        });
+        var state = new WorkQueueState { PendingDirectories = 1 };
+        channel.Writer.TryWrite(root);
+
+        var workerCount = Math.Max(1, context.Options.MaxDegreeOfParallelism);
+        var workers = Enumerable.Range(0, workerCount)
+            .Select(_ => Task.Run(async () =>
+            {
+                await foreach (var directory in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                {
                     try
                     {
-                        if (!context.Options.IncludeFiles && child is FileInfo)
-                        {
-                            continue;
-                        }
-
-                        children.Add(ScanPath(child.FullName, context, cancellationToken));
+                        await ProcessDirectoryAsync(directory, context, channel.Writer, state, cancellationToken)
+                            .ConfigureAwait(false);
                     }
-                    catch (Exception ex) when (IsExpectedFileSystemException(ex))
+                    finally
                     {
-                        var error = CreateError(child.FullName, ex);
-                        localErrors.Add(error);
-                        context.AddError(error);
+                        if (Interlocked.Decrement(ref state.PendingDirectories) == 0)
+                        {
+                            channel.Writer.TryComplete();
+                        }
                     }
+                }
+            }, cancellationToken))
+            .ToArray();
+
+        await Task.WhenAll(workers).ConfigureAwait(false);
+    }
+
+    private static async Task ProcessDirectoryAsync(
+        NodeBuilder directory,
+        ScanBuildContext context,
+        ChannelWriter<NodeBuilder> writer,
+        WorkQueueState state,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        context.RecordDirectory(directory.Path);
+        context.ReportSnapshotIfDue(directory.Path, directory.Root, force: false);
+
+        var visitKey = context.Options.FollowReparsePoints ? GetDirectoryVisitKey(directory.Path) : null;
+        if (visitKey is not null && !context.TryEnterDirectory(visitKey))
+        {
+            AddDirectoryError(directory, context, new ScanError(directory.Path, ScanErrorKind.Unsupported, "Directory cycle detected through a reparse point."));
+            return;
+        }
+
+        try
+        {
+            IEnumerable<FileSystemInfo> children;
+            try
+            {
+                children = new DirectoryInfo(directory.Path).EnumerateFileSystemInfos();
+            }
+            catch (Exception ex) when (IsExpectedFileSystemException(ex))
+            {
+                AddDirectoryError(directory, context, CreateError(directory.Path, ex));
+                return;
+            }
+
+            try
+            {
+                foreach (var child in children)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await ProcessChildAsync(directory, child, context, writer, state, cancellationToken)
+                        .ConfigureAwait(false);
                 }
             }
             catch (Exception ex) when (IsExpectedFileSystemException(ex))
             {
-                var error = CreateError(path, ex);
-                localErrors.Add(error);
-                context.AddError(error);
+                AddDirectoryError(directory, context, CreateError(directory.Path, ex));
             }
         }
         finally
@@ -174,19 +188,83 @@ public sealed class ManagedFileSystemScanProvider : IStorageScanProvider
             }
         }
 
-        var orderedChildren = children
-            .OrderByDescending(static child => child.Length)
-            .ThenBy(static child => child.Kind)
-            .ThenBy(static child => child.Name, StringComparer.CurrentCultureIgnoreCase)
-            .ToArray();
+        context.ReportSnapshotIfDue(directory.Path, directory.Root, force: false);
+    }
 
-        return StorageNode.Directory(
+    private static async Task ProcessChildAsync(
+        NodeBuilder parent,
+        FileSystemInfo child,
+        ScanBuildContext context,
+        ChannelWriter<NodeBuilder> writer,
+        WorkQueueState state,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var attributes = SafeGetAttributes(child, 0);
+            var isDirectory = attributes.HasFlag(FileAttributes.Directory);
+
+            if (!isDirectory)
+            {
+                if (!context.Options.IncludeFiles)
+                {
+                    return;
+                }
+
+                var fileInfo = child as FileInfo ?? new FileInfo(child.FullName);
+                var file = NodeBuilder.CreateFile(parent, fileInfo.FullName, fileInfo.Length, fileInfo.LastWriteTimeUtc, attributes);
+                parent.AddChild(file);
+                parent.AddFileToAncestors(fileInfo.Length);
+                context.RecordFile(fileInfo.FullName, fileInfo.Length);
+                context.ReportSnapshotIfDue(parent.Path, parent.Root, force: false);
+                return;
+            }
+
+            var directoryInfo = child as DirectoryInfo ?? new DirectoryInfo(child.FullName);
+            var directory = CreateDirectoryBuilder(directoryInfo.FullName, parent, directoryInfo.LastWriteTimeUtc, attributes);
+            parent.AddChild(directory);
+            directory.AddDirectoryToAncestors();
+
+            if (attributes.HasFlag(FileAttributes.ReparsePoint) && !context.Options.FollowReparsePoints)
+            {
+                context.RecordDirectory(directory.Path);
+                context.ReportSnapshotIfDue(parent.Path, parent.Root, force: false);
+                return;
+            }
+
+            Interlocked.Increment(ref state.PendingDirectories);
+            if (!writer.TryWrite(directory))
+            {
+                if (Interlocked.Decrement(ref state.PendingDirectories) == 0)
+                {
+                    writer.TryComplete();
+                }
+            }
+        }
+        catch (Exception ex) when (IsExpectedFileSystemException(ex))
+        {
+            AddDirectoryError(parent, context, CreateError(child.FullName, ex));
+        }
+    }
+
+    private static NodeBuilder CreateDirectoryBuilder(
+        string path,
+        NodeBuilder? parent,
+        DateTimeOffset? lastWriteTime = null,
+        FileAttributes attributes = FileAttributes.Directory)
+    {
+        return NodeBuilder.CreateDirectory(
+            parent,
             path,
             GetDirectoryKind(path),
-            SafeGetLastWriteTime(info),
-            attributes,
-            orderedChildren,
-            localErrors);
+            lastWriteTime,
+            attributes | FileAttributes.Directory);
+    }
+
+    private static void AddDirectoryError(NodeBuilder directory, ScanBuildContext context, ScanError error)
+    {
+        directory.AddError(error);
+        context.AddError(error);
     }
 
     private static StorageNodeKind GetDirectoryKind(string path)
@@ -212,30 +290,17 @@ public sealed class ManagedFileSystemScanProvider : IStorageScanProvider
         }
     }
 
-    private static string GetDirectoryVisitKey(DirectoryInfo info)
+    private static string GetDirectoryVisitKey(string path)
     {
         try
         {
+            var info = new DirectoryInfo(path);
             var target = info.LinkTarget is not null ? info.ResolveLinkTarget(returnFinalTarget: true) : null;
-            return Path.GetFullPath(target?.FullName ?? info.FullName)
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return Normalize(target?.FullName ?? info.FullName);
         }
         catch (Exception ex) when (IsExpectedFileSystemException(ex))
         {
-            return Path.GetFullPath(info.FullName)
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        }
-    }
-
-    private static DateTimeOffset? SafeGetLastWriteTime(FileSystemInfo info)
-    {
-        try
-        {
-            return info.LastWriteTimeUtc;
-        }
-        catch (Exception ex) when (IsExpectedFileSystemException(ex))
-        {
-            return null;
+            return Normalize(path);
         }
     }
 
@@ -267,10 +332,153 @@ public sealed class ManagedFileSystemScanProvider : IStorageScanProvider
         };
     }
 
+    private static string Normalize(string path)
+    {
+        return Path.GetFullPath(path)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private sealed class NodeBuilder
+    {
+        private readonly ConcurrentBag<NodeBuilder> _children = [];
+        private readonly ConcurrentBag<ScanError> _errors = [];
+        private long _length;
+        private int _fileCount;
+        private int _directoryCount;
+
+        private NodeBuilder(
+            NodeBuilder? parent,
+            string path,
+            StorageNodeKind kind,
+            long length,
+            int fileCount,
+            int directoryCount,
+            DateTimeOffset? lastWriteTime,
+            FileAttributes attributes)
+        {
+            Parent = parent;
+            Path = path;
+            Kind = kind;
+            _length = length;
+            _fileCount = fileCount;
+            _directoryCount = directoryCount;
+            LastWriteTime = lastWriteTime;
+            Attributes = attributes;
+        }
+
+        public NodeBuilder? Parent { get; }
+
+        public NodeBuilder Root => Parent?.Root ?? this;
+
+        public string Path { get; }
+
+        public StorageNodeKind Kind { get; }
+
+        public DateTimeOffset? LastWriteTime { get; }
+
+        public FileAttributes Attributes { get; }
+
+        public long Length => Interlocked.Read(ref _length);
+
+        public static NodeBuilder CreateDirectory(
+            NodeBuilder? parent,
+            string path,
+            StorageNodeKind kind,
+            DateTimeOffset? lastWriteTime,
+            FileAttributes attributes)
+        {
+            return new NodeBuilder(parent, path, kind, 0, 0, 1, lastWriteTime, attributes);
+        }
+
+        public static NodeBuilder CreateFile(
+            NodeBuilder parent,
+            string path,
+            long length,
+            DateTimeOffset? lastWriteTime,
+            FileAttributes attributes)
+        {
+            return new NodeBuilder(parent, path, StorageNodeKind.File, Math.Max(0, length), 1, 0, lastWriteTime, attributes);
+        }
+
+        public void AddChild(NodeBuilder child)
+        {
+            _children.Add(child);
+        }
+
+        public void AddError(ScanError error)
+        {
+            _errors.Add(error);
+        }
+
+        public void AddFileToAncestors(long length)
+        {
+            var current = this;
+            while (current is not null)
+            {
+                Interlocked.Add(ref current._length, Math.Max(0, length));
+                Interlocked.Increment(ref current._fileCount);
+                current = current.Parent;
+            }
+        }
+
+        public void AddDirectoryToAncestors()
+        {
+            var current = Parent;
+            while (current is not null)
+            {
+                Interlocked.Increment(ref current._directoryCount);
+                current = current.Parent;
+            }
+        }
+
+        public StorageNode ToStorageNode(int maxChildrenPerNode)
+        {
+            if (Kind == StorageNodeKind.File)
+            {
+                return StorageNode.File(Path, Length, LastWriteTime, Attributes);
+            }
+
+            var children = _children
+                .OrderByDescending(static child => child.Length)
+                .ThenBy(static child => child.Kind)
+                .ThenBy(static child => StorageNode.GetDisplayName(child.Path), StringComparer.CurrentCultureIgnoreCase)
+                .Take(maxChildrenPerNode)
+                .Select(child => child.ToStorageNode(maxChildrenPerNode))
+                .ToArray();
+
+            return new StorageNode(
+                Path,
+                StorageNode.GetDisplayName(Path),
+                Kind,
+                Length,
+                null,
+                Volatile.Read(ref _fileCount),
+                Volatile.Read(ref _directoryCount),
+                LastWriteTime,
+                Attributes,
+                children,
+                _errors.ToArray());
+        }
+    }
+
+    private sealed class WorkQueueState
+    {
+        public int PendingDirectories;
+    }
+
     private sealed class ScanBuildContext
     {
+        private readonly object _errorsLock = new();
+        private readonly object _activeDirectoriesLock = new();
+        private readonly object _snapshotLock = new();
         private readonly IProgress<ScanProgress> _progress;
         private readonly string _providerName;
+        private readonly List<ScanError> _errors = [];
+        private readonly HashSet<string> _activeDirectories = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Stopwatch _snapshotStopwatch = Stopwatch.StartNew();
+        private long _itemsScanned;
+        private long _bytesScanned;
+        private int _directoriesScanned;
 
         public ScanBuildContext(
             ScanOptions options,
@@ -284,53 +492,111 @@ public sealed class ManagedFileSystemScanProvider : IStorageScanProvider
 
         public ScanOptions Options { get; }
 
-        public long ItemsScanned { get; private set; }
+        public long ItemsScanned => Interlocked.Read(ref _itemsScanned);
 
-        public long BytesScanned { get; private set; }
+        public long BytesScanned => Interlocked.Read(ref _bytesScanned);
 
-        public int DirectoriesScanned { get; private set; }
+        public int DirectoriesScanned => Volatile.Read(ref _directoriesScanned);
 
-        public List<ScanError> Errors { get; } = [];
-
-        private HashSet<string> ActiveDirectories { get; } = new(StringComparer.OrdinalIgnoreCase);
-
-        public void RecordItem(string path, long bytes, bool isDirectory)
+        public int ErrorCount
         {
-            ItemsScanned++;
-            BytesScanned += Math.Max(0, bytes);
-
-            if (isDirectory)
+            get
             {
-                DirectoriesScanned++;
+                lock (_errorsLock)
+                {
+                    return _errors.Count;
+                }
             }
+        }
 
-            if (ItemsScanned % Math.Max(1, Options.ProgressItemInterval) == 0)
+        public IReadOnlyList<ScanError> GetErrors()
+        {
+            lock (_errorsLock)
             {
-                _progress.Report(new ScanProgress(
-                    Options.RootPath,
-                    path,
-                    ItemsScanned,
-                    BytesScanned,
-                    DirectoriesScanned,
-                    Errors.Count,
-                    ScanPhase.Scanning,
-                    _providerName));
+                return _errors.ToArray();
             }
+        }
+
+        public void RecordFile(string path, long bytes)
+        {
+            var items = Interlocked.Increment(ref _itemsScanned);
+            var scannedBytes = Interlocked.Add(ref _bytesScanned, Math.Max(0, bytes));
+            ReportCounterProgressIfDue(path, items, scannedBytes);
+        }
+
+        public void RecordDirectory(string path)
+        {
+            var items = Interlocked.Increment(ref _itemsScanned);
+            var scannedBytes = BytesScanned;
+            Interlocked.Increment(ref _directoriesScanned);
+            ReportCounterProgressIfDue(path, items, scannedBytes);
         }
 
         public void AddError(ScanError error)
         {
-            Errors.Add(error);
+            lock (_errorsLock)
+            {
+                _errors.Add(error);
+            }
+        }
+
+        public void ReportSnapshotIfDue(string currentPath, NodeBuilder root, bool force)
+        {
+            lock (_snapshotLock)
+            {
+                if (!force
+                    && (ItemsScanned % Math.Max(1, Options.SnapshotItemInterval) != 0
+                        || _snapshotStopwatch.Elapsed < Options.SnapshotMinimumInterval))
+                {
+                    return;
+                }
+
+                _snapshotStopwatch.Restart();
+                _progress.Report(new ScanProgress(
+                    Options.RootPath,
+                    currentPath,
+                    ItemsScanned,
+                    BytesScanned,
+                    DirectoriesScanned,
+                    ErrorCount,
+                    ScanPhase.Scanning,
+                    _providerName,
+                    root.ToStorageNode(Math.Max(1, Options.MaximumSnapshotChildren))));
+            }
         }
 
         public bool TryEnterDirectory(string key)
         {
-            return ActiveDirectories.Add(key);
+            lock (_activeDirectoriesLock)
+            {
+                return _activeDirectories.Add(key);
+            }
         }
 
         public void LeaveDirectory(string key)
         {
-            ActiveDirectories.Remove(key);
+            lock (_activeDirectoriesLock)
+            {
+                _activeDirectories.Remove(key);
+            }
+        }
+
+        private void ReportCounterProgressIfDue(string path, long items, long scannedBytes)
+        {
+            if (items % Math.Max(1, Options.ProgressItemInterval) != 0)
+            {
+                return;
+            }
+
+            _progress.Report(new ScanProgress(
+                Options.RootPath,
+                path,
+                items,
+                scannedBytes,
+                DirectoriesScanned,
+                ErrorCount,
+                ScanPhase.Scanning,
+                _providerName));
         }
     }
 }

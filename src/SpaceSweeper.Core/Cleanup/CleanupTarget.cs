@@ -6,7 +6,8 @@ public sealed record CleanupTarget(
     string Path,
     StorageNodeKind Kind,
     long Length,
-    FileAttributes Attributes = 0)
+    FileAttributes Attributes = 0,
+    string? ProviderIdentity = null)
 {
     public static CleanupTarget FromNode(StorageNode node)
     {

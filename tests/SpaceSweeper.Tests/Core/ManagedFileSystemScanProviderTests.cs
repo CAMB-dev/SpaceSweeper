@@ -31,6 +31,9 @@ public sealed class ManagedFileSystemScanProviderTests : IDisposable
         Assert.Equal(2, result.Root.DirectoryCount);
         Assert.True(result.Root.Length >= 15);
         Assert.Contains(result.Root.Children, child => child.Name == "nested");
+
+        var nestedNode = Assert.Single(result.Root.Children, child => child.Name == "nested");
+        Assert.Equal(1, nestedNode.DirectoryCount);
     }
 
     [Fact]
@@ -40,6 +43,43 @@ public sealed class ManagedFileSystemScanProviderTests : IDisposable
         var status = await provider.GetStatusAsync(new ScanOptions(Path.Combine(_root, "missing")));
 
         Assert.False(status.IsAvailable);
+    }
+
+    [Fact]
+    public async Task GetStatusAsync_ReturnsAvailableForDriveRoot()
+    {
+        var provider = new ManagedFileSystemScanProvider();
+        var driveRoot = Path.GetPathRoot(_root)!;
+
+        var status = await provider.GetStatusAsync(new ScanOptions(driveRoot));
+
+        Assert.True(status.IsAvailable);
+    }
+
+    [Fact]
+    public async Task ScanAsync_ReportsSnapshotProgressBeforeCompletion()
+    {
+        for (var index = 0; index < 8; index++)
+        {
+            await File.WriteAllTextAsync(Path.Combine(_root, $"file-{index}.txt"), new string('x', 128), Encoding.UTF8);
+        }
+
+        var provider = new ManagedFileSystemScanProvider();
+        var progress = new CapturingProgress<ScanProgress>();
+
+        await provider.ScanAsync(
+            new ScanOptions(_root)
+            {
+                ProgressItemInterval = 1,
+                SnapshotItemInterval = 1,
+                SnapshotMinimumInterval = TimeSpan.Zero,
+                MaximumSnapshotChildren = 4,
+                MaxDegreeOfParallelism = 2
+            },
+            progress);
+
+        Assert.Contains(progress.Items, item => item.Phase == ScanPhase.Scanning && item.SnapshotRoot is not null);
+        Assert.Contains(progress.Items, item => item.Phase == ScanPhase.Completed && item.SnapshotRoot is not null);
     }
 
     public void Dispose()
@@ -62,6 +102,31 @@ public sealed class ManagedFileSystemScanProviderTests : IDisposable
             catch (UnauthorizedAccessException) when (attempt < 2)
             {
                 Thread.Sleep(50);
+            }
+        }
+    }
+
+    private sealed class CapturingProgress<T> : IProgress<T>
+    {
+        private readonly object _lock = new();
+        private readonly List<T> _items = [];
+
+        public IReadOnlyList<T> Items
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _items.ToArray();
+                }
+            }
+        }
+
+        public void Report(T value)
+        {
+            lock (_lock)
+            {
+                _items.Add(value);
             }
         }
     }

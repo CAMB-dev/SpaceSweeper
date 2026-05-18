@@ -7,6 +7,17 @@
     <sys:String x:Key="ScanButton">Scan</sys:String>
     <sys:String x:Key="CancelButton">Cancel</sys:String>
     <sys:String x:Key="CleanupButton">Clean</sys:String>
+    <sys:String x:Key="SettingsButton">Settings</sys:String>
+    <sys:String x:Key="EnterButton">Enter</sys:String>
+    <sys:String x:Key="UpButton">Up</sys:String>
+    <sys:String x:Key="RootButton">Root</sys:String>
+    <sys:String x:Key="SettingsTitle">Settings</sys:String>
+    <sys:String x:Key="CloseButton">Close</sys:String>
+    <sys:String x:Key="MaxWorkersLabel">Parallel workers</sys:String>
+    <sys:String x:Key="ProgressIntervalLabel">Progress interval (items)</sys:String>
+    <sys:String x:Key="SnapshotIntervalLabel">Live snapshot interval (items)</sys:String>
+    <sys:String x:Key="SnapshotThrottleLabel">Minimum snapshot interval (ms)</sys:String>
+    <sys:String x:Key="SnapshotChildrenLabel">Max snapshot nodes per level</sys:String>
     <sys:String x:Key="TreeTitle">Folder Tree</sys:String>
     <sys:String x:Key="TreemapTitle">Treemap</sys:String>
     <sys:String x:Key="ChildrenTitle">Current Folder</sys:String>

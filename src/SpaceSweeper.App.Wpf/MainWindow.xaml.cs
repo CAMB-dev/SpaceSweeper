@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
 using SpaceSweeper.App.Wpf.Localization;
 using SpaceSweeper.App.Wpf.ViewModels;
 using SpaceSweeper.Core.Scanning;
@@ -20,6 +22,7 @@ public partial class MainWindow : Window
             new WpfTextProvider());
         DataContext = _viewModel;
         Treemap.NodeSelected += OnTreemapNodeSelected;
+        Treemap.NodeActivated += OnTreemapNodeActivated;
     }
 
     private void OnTreeSelectionChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
@@ -36,5 +39,49 @@ public partial class MainWindow : Window
         {
             _viewModel.SelectNode(node);
         }
+    }
+
+    private void OnTreemapNodeActivated(object? sender, StorageNode? node)
+    {
+        if (node is not null)
+        {
+            _viewModel.SelectNode(node);
+            _viewModel.EnterSelectedNode();
+        }
+    }
+
+    private void OnChildGridMouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (FindParent<DataGridRow>((DependencyObject)e.OriginalSource) is not null)
+        {
+            _viewModel.EnterSelectedNode();
+        }
+    }
+
+    private void OnChildGridPreviewMouseRightButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        var row = FindParent<DataGridRow>((DependencyObject)e.OriginalSource);
+        if (row?.Item is StorageNodeViewModel node)
+        {
+            row.IsSelected = true;
+            row.Focus();
+            _viewModel.SelectNode(node);
+        }
+    }
+
+    private static T? FindParent<T>(DependencyObject? current)
+        where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T match)
+            {
+                return match;
+            }
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
     }
 }

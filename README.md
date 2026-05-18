@@ -42,7 +42,8 @@ The publish output contains the runtime and app binaries for `win-x64`.
 
 ## Current MVP Status
 
-- Managed filesystem scanning is functional.
+- Managed filesystem scanning is functional and uses a bounded work queue with configurable worker parallelism.
 - NTFS fast scanning has a provider boundary in `SpaceSweeper.Windows`, but the low-level MFT/USN reader is intentionally not enabled yet.
 - Cleanup defaults to moving selected items to the Recycle Bin and blocks protected paths.
 - The WPF app includes Chinese/English runtime switching.
+- The WPF app supports drive-root selection, live progress, live scan snapshots, treemap drill-down, current-folder navigation, context menus, and a settings window for scan performance controls.

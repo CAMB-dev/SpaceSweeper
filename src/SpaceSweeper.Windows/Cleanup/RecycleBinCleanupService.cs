@@ -1,4 +1,6 @@
 using Microsoft.VisualBasic.FileIO;
+using Microsoft.Win32.SafeHandles;
+using System.Runtime.InteropServices;
 using SpaceSweeper.Core.Cleanup;
 using SpaceSweeper.Core.Scanning;
 
@@ -35,9 +37,13 @@ public sealed class RecycleBinCleanupService : ICleanupService
             {
                 blocked.Add(new CleanupBlockedItem(target.Path, "Reparse points are blocked by cleanup policy."));
             }
+            else if (!TryGetFileIdentity(target.Path, out var identity, out var identityError))
+            {
+                blocked.Add(new CleanupBlockedItem(target.Path, identityError));
+            }
             else
             {
-                allowed.Add(target);
+                allowed.Add(target with { ProviderIdentity = identity });
             }
         }
 
@@ -64,7 +70,7 @@ public sealed class RecycleBinCleanupService : ICleanupService
                     continue;
                 }
 
-                if (target.Kind is StorageNodeKind.Directory or StorageNodeKind.Drive)
+            if (target.Kind is StorageNodeKind.Directory or StorageNodeKind.Drive)
                 {
                     FileSystem.DeleteDirectory(
                         target.Path,
@@ -126,6 +132,11 @@ public sealed class RecycleBinCleanupService : ICleanupService
                 return false;
             }
 
+            if (!IdentityStillMatches(target, out reason))
+            {
+                return false;
+            }
+
             return true;
         }
 
@@ -154,6 +165,102 @@ public sealed class RecycleBinCleanupService : ICleanupService
             return false;
         }
 
+        if (!IdentityStillMatches(target, out reason))
+        {
+            return false;
+        }
+
         return true;
+    }
+
+    private static bool IdentityStillMatches(CleanupTarget target, out string reason)
+    {
+        reason = string.Empty;
+
+        if (target.ProviderIdentity is null)
+        {
+            reason = "Cleanup target identity was not captured during preview.";
+            return false;
+        }
+
+        if (!TryGetFileIdentity(target.Path, out var currentIdentity, out var identityError))
+        {
+            reason = identityError;
+            return false;
+        }
+
+        if (!string.Equals(target.ProviderIdentity, currentIdentity, StringComparison.Ordinal))
+        {
+            reason = "Path identity changed after preview.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryGetFileIdentity(string path, out string? identity, out string error)
+    {
+        identity = null;
+        error = string.Empty;
+
+        using var handle = CreateFileW(
+            path,
+            0,
+            FileShare.ReadWrite | FileShare.Delete,
+            IntPtr.Zero,
+            FileMode.Open,
+            FileFlagsAndAttributes.FileFlagBackupSemantics,
+            IntPtr.Zero);
+
+        if (handle.IsInvalid)
+        {
+            error = $"Cannot verify target identity. Win32 error: {Marshal.GetLastWin32Error()}";
+            return false;
+        }
+
+        if (!GetFileInformationByHandle(handle, out var info))
+        {
+            error = $"Cannot read target identity. Win32 error: {Marshal.GetLastWin32Error()}";
+            return false;
+        }
+
+        identity = $"{info.VolumeSerialNumber:X8}:{info.FileIndexHigh:X8}{info.FileIndexLow:X8}";
+        return true;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern SafeFileHandle CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        FileShare shareMode,
+        IntPtr securityAttributes,
+        FileMode creationDisposition,
+        FileFlagsAndAttributes flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle file,
+        out ByHandleFileInformation fileInformation);
+
+    [Flags]
+    private enum FileFlagsAndAttributes : uint
+    {
+        FileFlagBackupSemantics = 0x02000000
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
     }
 }

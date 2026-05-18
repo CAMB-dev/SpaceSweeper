@@ -8,4 +8,5 @@ public sealed record ScanProgress(
     int DirectoriesScanned,
     int ErrorCount,
     ScanPhase Phase,
-    string ProviderName);
+    string ProviderName,
+    StorageNode? SnapshotRoot = null);
