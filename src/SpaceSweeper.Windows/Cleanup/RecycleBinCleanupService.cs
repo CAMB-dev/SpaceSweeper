@@ -50,11 +50,13 @@ public sealed class RecycleBinCleanupService : ICleanupService
         return Task.FromResult(new CleanupPreview(allowed, blocked));
     }
 
-    public async Task<CleanupResult> CleanupAsync(
+    public Task<CleanupResult> CleanupAsync(
         IReadOnlyList<CleanupTarget> targets,
         CancellationToken cancellationToken = default)
     {
-        var preview = await PreviewAsync(targets, cancellationToken).ConfigureAwait(false);
+        ArgumentNullException.ThrowIfNull(targets);
+
+        var preview = ValidateApprovedTargets(targets, cancellationToken);
         var failures = new List<CleanupFailure>();
         var completed = 0;
 
@@ -70,7 +72,7 @@ public sealed class RecycleBinCleanupService : ICleanupService
                     continue;
                 }
 
-            if (target.Kind is StorageNodeKind.Directory or StorageNodeKind.Drive)
+                if (target.Kind is StorageNodeKind.Directory or StorageNodeKind.Drive)
                 {
                     FileSystem.DeleteDirectory(
                         target.Path,
@@ -100,11 +102,44 @@ public sealed class RecycleBinCleanupService : ICleanupService
             failures.Add(new CleanupFailure(blocked.Path, blocked.Reason));
         }
 
-        return new CleanupResult(
+        return Task.FromResult(new CleanupResult(
             targets.Count,
             completed,
             preview.TotalBytes,
-            failures);
+            failures));
+    }
+
+    private CleanupPreview ValidateApprovedTargets(
+        IReadOnlyList<CleanupTarget> targets,
+        CancellationToken cancellationToken)
+    {
+        var allowed = new List<CleanupTarget>();
+        var blocked = new List<CleanupBlockedItem>();
+
+        foreach (var target in targets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var decision = _protectedPathPolicy.Evaluate(target.Path);
+            if (!decision.IsAllowed)
+            {
+                blocked.Add(new CleanupBlockedItem(target.Path, decision.Reason ?? "Path is protected."));
+            }
+            else if (target.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                blocked.Add(new CleanupBlockedItem(target.Path, "Reparse points are blocked by cleanup policy."));
+            }
+            else if (target.ProviderIdentity is null)
+            {
+                blocked.Add(new CleanupBlockedItem(target.Path, "Cleanup target identity was not captured during preview."));
+            }
+            else
+            {
+                allowed.Add(target);
+            }
+        }
+
+        return new CleanupPreview(allowed, blocked);
     }
 
     private static bool TargetStillMatches(CleanupTarget target, out string reason)

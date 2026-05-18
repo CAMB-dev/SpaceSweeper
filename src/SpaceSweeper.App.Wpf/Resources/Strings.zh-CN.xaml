@@ -37,7 +37,7 @@
     <sys:String x:Key="CleanupBlockedTitle">无法清理</sys:String>
     <sys:String x:Key="CleanupBlockedDefault">路径被安全策略阻止。</sys:String>
     <sys:String x:Key="CleanupConfirmTitle">确认清理</sys:String>
-    <sys:String x:Key="CleanupConfirmFormat">将把 {0} 项移入回收站，预计释放 {1}。被阻止项：{2}。是否继续？</sys:String>
+    <sys:String x:Key="CleanupConfirmFormat">将把 {0} 项移入回收站，预计释放 {1}。被阻止项：{2}。目标：{3}。是否继续？</sys:String>
     <sys:String x:Key="CleanupCompleteTitle">清理完成</sys:String>
     <sys:String x:Key="CleanupCompleteFormat">已处理 {0} 项，失败 {1} 项。</sys:String>
 </ResourceDictionary>

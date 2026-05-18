@@ -18,6 +18,8 @@ public sealed class MainViewModel : ObservableObject
     private string _statusText;
     private bool _isScanning;
     private double _progressValue;
+    private long _scanGeneration;
+    private long _activeScanGeneration;
     private StorageNodeViewModel? _rootNode;
     private StorageNodeViewModel? _viewNode;
     private StorageNodeViewModel? _selectedNode;
@@ -25,6 +27,7 @@ public sealed class MainViewModel : ObservableObject
     private DriveOption? _selectedDrive;
     private LanguageOption _selectedLanguage;
     private bool _updatingDriveSelection;
+    private bool _isCleaning;
     private DateTimeOffset _lastUiProgressUpdate = DateTimeOffset.MinValue;
 
     public MainViewModel(
@@ -43,11 +46,11 @@ public sealed class MainViewModel : ObservableObject
         Languages = _text.Languages;
         _selectedLanguage = Languages[0];
 
-        BrowseCommand = new RelayCommand(Browse, () => !IsScanning);
+        BrowseCommand = new RelayCommand(Browse, () => !IsScanning && !IsCleaning);
         ScanCommand = new RelayCommand(ScanAsync, CanScan);
         CancelCommand = new RelayCommand(Cancel, () => IsScanning);
-        CleanupCommand = new RelayCommand(CleanupAsync, () => SelectedNode is not null && !IsScanning);
-        SettingsCommand = new RelayCommand(() => _dialogs.ShowSettings(Settings), () => !IsScanning);
+        CleanupCommand = new RelayCommand(CleanupAsync, () => SelectedNode is not null && !IsScanning && !IsCleaning);
+        SettingsCommand = new RelayCommand(() => _dialogs.ShowSettings(Settings), () => !IsScanning && !IsCleaning);
         EnterCommand = new RelayCommand(EnterSelectedNode, CanEnterSelectedNode);
         UpCommand = new RelayCommand(GoUp, CanGoUp);
         RootCommand = new RelayCommand(GoRoot, () => RootNode is not null && ViewNode is not null && !IsSameNode(RootNode, ViewNode));
@@ -128,6 +131,21 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    public bool IsCleaning
+    {
+        get => _isCleaning;
+        private set
+        {
+            if (SetProperty(ref _isCleaning, value))
+            {
+                BrowseCommand.NotifyCanExecuteChanged();
+                ScanCommand.NotifyCanExecuteChanged();
+                CleanupCommand.NotifyCanExecuteChanged();
+                SettingsCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
     public double ProgressValue
     {
         get => _progressValue;
@@ -158,6 +176,7 @@ public sealed class MainViewModel : ObservableObject
                 OnPropertyChanged(nameof(ViewStorageNode));
                 OnPropertyChanged(nameof(ViewPath));
                 OnPropertyChanged(nameof(SelectedChildren));
+                SyncSelectedChildToView();
                 UpCommand.NotifyCanExecuteChanged();
                 RootCommand.NotifyCanExecuteChanged();
             }
@@ -176,9 +195,7 @@ public sealed class MainViewModel : ObservableObject
             if (SetProperty(ref _selectedNode, value))
             {
                 OnPropertyChanged(nameof(SelectedStorageNode));
-                OnPropertyChanged(nameof(SelectedChildren));
-                _selectedChild = null;
-                OnPropertyChanged(nameof(SelectedChild));
+                SyncSelectedChildToView();
                 CleanupCommand.NotifyCanExecuteChanged();
                 EnterCommand.NotifyCanExecuteChanged();
             }
@@ -256,6 +273,9 @@ public sealed class MainViewModel : ObservableObject
         }
 
         IsScanning = true;
+        var scanGeneration = ++_scanGeneration;
+        _activeScanGeneration = scanGeneration;
+        _lastUiProgressUpdate = DateTimeOffset.MinValue;
         RootItems.Clear();
         RootNode = null;
         ViewNode = null;
@@ -265,7 +285,7 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             _scanCancellation = new CancellationTokenSource();
-            var progress = new Progress<ScanProgress>(OnScanProgressChanged);
+            var progress = new Progress<ScanProgress>(progress => OnScanProgressChanged(scanGeneration, progress));
             var result = await _scanner.ScanAsync(new ScanOptions(RootPath)
             {
                 FollowReparsePoints = false,
@@ -275,6 +295,7 @@ public sealed class MainViewModel : ObservableObject
                 MaximumSnapshotChildren = Settings.MaximumSnapshotChildren,
                 MaxDegreeOfParallelism = Settings.MaxDegreeOfParallelism
             }, progress, _scanCancellation.Token).ConfigureAwait(true);
+            _activeScanGeneration = 0;
             var root = new StorageNodeViewModel(result.Root);
             ReplaceRoot(root, preserveSelection: false);
             StatusText = string.Format(
@@ -288,15 +309,22 @@ public sealed class MainViewModel : ObservableObject
         }
         catch (OperationCanceledException)
         {
+            _activeScanGeneration = 0;
             StatusText = _text.Get("StatusCancelled");
         }
         catch (Exception ex)
         {
+            _activeScanGeneration = 0;
             StatusText = _text.Get("StatusFailed");
             _dialogs.ShowError(_text.Get("ScanFailedTitle"), ex.Message);
         }
         finally
         {
+            if (_activeScanGeneration == scanGeneration)
+            {
+                _activeScanGeneration = 0;
+            }
+
             _scanCancellation?.Dispose();
             _scanCancellation = null;
 
@@ -312,54 +340,72 @@ public sealed class MainViewModel : ObservableObject
 
     private async Task CleanupAsync()
     {
-        if (SelectedNode is null)
+        if (SelectedNode is null || IsCleaning)
         {
             return;
         }
 
-        var targets = new[] { CleanupTarget.FromNode(SelectedNode.Node) };
-        var preview = await _cleanupService.PreviewAsync(targets).ConfigureAwait(true);
-
-        if (!preview.CanExecute)
+        IsCleaning = true;
+        try
         {
-            var reason = preview.BlockedItems.FirstOrDefault()?.Reason ?? _text.Get("CleanupBlockedDefault");
-            _dialogs.ShowError(_text.Get("CleanupBlockedTitle"), reason);
-            return;
+            var targets = new[] { CleanupTarget.FromNode(SelectedNode.Node) };
+            var preview = await _cleanupService.PreviewAsync(targets).ConfigureAwait(true);
+
+            if (!preview.CanExecute)
+            {
+                var reason = preview.BlockedItems.FirstOrDefault()?.Reason ?? _text.Get("CleanupBlockedDefault");
+                _dialogs.ShowError(_text.Get("CleanupBlockedTitle"), reason);
+                return;
+            }
+
+            var confirmed = _dialogs.Confirm(
+                _text.Get("CleanupConfirmTitle"),
+                string.Format(
+                    _text.Get("CleanupConfirmFormat"),
+                    preview.AllowedItems.Count,
+                    SizeFormatter.FormatBytes(preview.TotalBytes),
+                    preview.BlockedItems.Count,
+                    preview.AllowedItems[0].Path));
+
+            if (!confirmed)
+            {
+                return;
+            }
+
+            var result = await _cleanupService.CleanupAsync(preview.AllowedItems).ConfigureAwait(true);
+            _dialogs.ShowInfo(
+                _text.Get("CleanupCompleteTitle"),
+                string.Format(
+                    _text.Get("CleanupCompleteFormat"),
+                    result.CompletedCount,
+                    result.Failures.Count));
+
+            if (result.CompletedCount > 0)
+            {
+                RootItems.Clear();
+                RootNode = null;
+                ViewNode = null;
+                SelectedNode = null;
+                StatusText = _text.Get("StatusRescanRequired");
+            }
         }
-
-        var confirmed = _dialogs.Confirm(
-            _text.Get("CleanupConfirmTitle"),
-            string.Format(
-                _text.Get("CleanupConfirmFormat"),
-                preview.AllowedItems.Count,
-                SizeFormatter.FormatBytes(preview.TotalBytes),
-                preview.BlockedItems.Count));
-
-        if (!confirmed)
+        catch (Exception ex)
         {
-            return;
+            _dialogs.ShowError(_text.Get("CleanupBlockedTitle"), ex.Message);
         }
-
-        var result = await _cleanupService.CleanupAsync(preview.AllowedItems).ConfigureAwait(true);
-        _dialogs.ShowInfo(
-            _text.Get("CleanupCompleteTitle"),
-            string.Format(
-                _text.Get("CleanupCompleteFormat"),
-                result.CompletedCount,
-                result.Failures.Count));
-
-        if (result.CompletedCount > 0)
+        finally
         {
-            RootItems.Clear();
-            RootNode = null;
-            ViewNode = null;
-            SelectedNode = null;
-            StatusText = _text.Get("StatusRescanRequired");
+            IsCleaning = false;
         }
     }
 
-    private void OnScanProgressChanged(ScanProgress progress)
+    private void OnScanProgressChanged(long scanGeneration, ScanProgress progress)
     {
+        if (scanGeneration != _activeScanGeneration || !IsScanning)
+        {
+            return;
+        }
+
         if (progress.Phase != ScanPhase.Scanning)
         {
             return;
@@ -388,6 +434,7 @@ public sealed class MainViewModel : ObservableObject
     private bool CanScan()
     {
         return !IsScanning
+            && !IsCleaning
             && !string.IsNullOrWhiteSpace(RootPath)
             && (Directory.Exists(RootPath) || File.Exists(RootPath));
     }
@@ -485,17 +532,38 @@ public sealed class MainViewModel : ObservableObject
         return null;
     }
 
+    private void SyncSelectedChildToView()
+    {
+        var selectedPath = SelectedNode?.Node.Path;
+        var selectedChild = selectedPath is null || ViewNode is null
+            ? null
+            : ViewNode.Children.FirstOrDefault(child =>
+                string.Equals(child.Node.Path, selectedPath, StringComparison.OrdinalIgnoreCase));
+
+        if (!ReferenceEquals(_selectedChild, selectedChild))
+        {
+            _selectedChild = selectedChild;
+            OnPropertyChanged(nameof(SelectedChild));
+        }
+    }
+
     private void ReplaceRoot(StorageNodeViewModel root, bool preserveSelection)
     {
         var selectedPath = preserveSelection ? SelectedNode?.Node.Path : null;
+        var viewPath = ViewNode?.Node.Path;
+        var previousViewNode = ViewNode;
+        var previousSelectedNode = SelectedNode;
         RootNode = root;
         RootItems.Clear();
         RootItems.Add(root);
-        var selectedStorageNode = selectedPath is null ? null : FindStorageNode(root.Node, selectedPath);
-        SelectedNode = selectedStorageNode is null ? root : new StorageNodeViewModel(selectedStorageNode);
-        var viewPath = ViewNode?.Node.Path;
         var viewStorageNode = viewPath is null ? null : FindStorageNode(root.Node, viewPath);
-        ViewNode = viewStorageNode is null ? root : new StorageNodeViewModel(viewStorageNode);
+        ViewNode = viewStorageNode is null
+            ? (preserveSelection && previousViewNode is not null ? previousViewNode : root)
+            : new StorageNodeViewModel(viewStorageNode);
+        var selectedStorageNode = selectedPath is null ? null : FindStorageNode(root.Node, selectedPath);
+        SelectedNode = selectedStorageNode is null
+            ? (preserveSelection && previousSelectedNode is not null ? previousSelectedNode : ViewNode)
+            : new StorageNodeViewModel(selectedStorageNode);
     }
 
     private static StorageNode? FindParentStorageNode(StorageNode current, string childPath)

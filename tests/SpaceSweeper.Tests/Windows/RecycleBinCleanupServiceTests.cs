@@ -32,7 +32,60 @@ public sealed class RecycleBinCleanupServiceTests
         }
         finally
         {
-            Directory.Delete(Path.GetDirectoryName(allowedPath)!, recursive: true);
+            DeleteDirectoryWithRetry(Path.GetDirectoryName(allowedPath)!);
+        }
+    }
+
+    [Fact]
+    public async Task CleanupAsync_BlocksTargetsWithoutPreviewIdentity()
+    {
+        var service = new RecycleBinCleanupService(new BlockingPolicy());
+        var root = Path.Combine(Path.GetTempPath(), "SpaceSweeper.Tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "target.bin");
+        Directory.CreateDirectory(root);
+        await File.WriteAllTextAsync(path, "data");
+
+        try
+        {
+            var target = new CleanupTarget(path, StorageNodeKind.File, 4);
+            var result = await service.CleanupAsync(new[] { target });
+
+            Assert.Equal(0, result.CompletedCount);
+            Assert.Single(result.Failures);
+            Assert.True(File.Exists(path));
+        }
+        finally
+        {
+            DeleteDirectoryWithRetry(root);
+        }
+    }
+
+    [Fact]
+    public async Task CleanupAsync_FailsWhenPreviewedIdentityChanges()
+    {
+        var service = new RecycleBinCleanupService(new BlockingPolicy());
+        var root = Path.Combine(Path.GetTempPath(), "SpaceSweeper.Tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "target.bin");
+        Directory.CreateDirectory(root);
+        await File.WriteAllTextAsync(path, "a");
+
+        try
+        {
+            var preview = await service.PreviewAsync(new[] { new CleanupTarget(path, StorageNodeKind.File, 1) });
+            Assert.Single(preview.AllowedItems);
+
+            File.Delete(path);
+            await File.WriteAllTextAsync(path, "b");
+
+            var result = await service.CleanupAsync(preview.AllowedItems);
+
+            Assert.Equal(0, result.CompletedCount);
+            Assert.Single(result.Failures);
+            Assert.True(File.Exists(path));
+        }
+        finally
+        {
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -43,6 +96,30 @@ public sealed class RecycleBinCleanupServiceTests
             return path.Contains("blocked", StringComparison.OrdinalIgnoreCase)
                 ? ProtectedPathDecision.Deny("blocked")
                 : ProtectedPathDecision.Allow;
+        }
+    }
+
+    private static void DeleteDirectoryWithRetry(string path)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                if (Directory.Exists(path))
+                {
+                    Directory.Delete(path, recursive: true);
+                }
+
+                return;
+            }
+            catch (IOException) when (attempt < 2)
+            {
+                Thread.Sleep(50);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 2)
+            {
+                Thread.Sleep(50);
+            }
         }
     }
 }

@@ -37,7 +37,7 @@
     <sys:String x:Key="CleanupBlockedTitle">Cleanup Blocked</sys:String>
     <sys:String x:Key="CleanupBlockedDefault">The path is blocked by safety policy.</sys:String>
     <sys:String x:Key="CleanupConfirmTitle">Confirm Cleanup</sys:String>
-    <sys:String x:Key="CleanupConfirmFormat">Move {0} item(s) to the Recycle Bin and reclaim about {1}. Blocked items: {2}. Continue?</sys:String>
+    <sys:String x:Key="CleanupConfirmFormat">Move {0} item(s) to the Recycle Bin and reclaim about {1}. Blocked items: {2}. Target: {3}. Continue?</sys:String>
     <sys:String x:Key="CleanupCompleteTitle">Cleanup Complete</sys:String>
     <sys:String x:Key="CleanupCompleteFormat">Processed {0} item(s), {1} failure(s).</sys:String>
 </ResourceDictionary>
