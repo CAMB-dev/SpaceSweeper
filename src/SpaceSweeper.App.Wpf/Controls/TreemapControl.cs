@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using SpaceSweeper.Core.Scanning;
 using SpaceSweeper.Core.Utilities;
+using WpfBrush = System.Windows.Media.Brush;
 using MediaColor = System.Windows.Media.Color;
 using WpfBrushes = System.Windows.Media.Brushes;
 using WpfFlowDirection = System.Windows.FlowDirection;
@@ -17,6 +18,7 @@ public sealed class TreemapControl : FrameworkElement
     private const int MaxRenderedNodes = 1800;
     private const int MaxChildrenPerNode = 64;
     private const double MinimumChildArea = 18;
+    private const double ContainerHeaderHeight = 18;
 
     public static readonly DependencyProperty RootProperty = DependencyProperty.Register(
         nameof(Root),
@@ -115,12 +117,24 @@ public sealed class TreemapControl : FrameworkElement
 
         drawingContext.DrawRectangle(brush, pen, bounds);
 
-        if (bounds.Width > 72 && bounds.Height > 34)
+        var childrenBounds = bounds;
+        var hasVisibleChildren = node.Children.Count > 0 && bounds.Width * bounds.Height >= MinimumChildArea;
+        if (hasVisibleChildren && bounds.Width >= 48 && bounds.Height >= 36)
         {
-            DrawLabel(drawingContext, node, bounds);
+            var headerBounds = new Rect(bounds.X + 2, bounds.Y + 2, Math.Max(0, bounds.Width - 4), ContainerHeaderHeight);
+            DrawLabel(drawingContext, node, headerBounds, GetTextBrush(GetColor(depth, node)), includeSize: false);
+            childrenBounds = new Rect(
+                bounds.X,
+                bounds.Y + ContainerHeaderHeight + 3,
+                bounds.Width,
+                Math.Max(0, bounds.Height - ContainerHeaderHeight - 3));
+        }
+        else if (CanDrawInlineLabel(bounds))
+        {
+            DrawLabel(drawingContext, node, bounds, GetTextBrush(GetColor(depth, node)), includeSize: bounds.Width >= 96 && bounds.Height >= 30);
         }
 
-        if (depth >= 5 || node.Children.Count == 0 || bounds.Width * bounds.Height < MinimumChildArea)
+        if (depth >= 5 || node.Children.Count == 0 || childrenBounds.Width * childrenBounds.Height < MinimumChildArea)
         {
             return;
         }
@@ -141,8 +155,8 @@ public sealed class TreemapControl : FrameworkElement
             return;
         }
 
-        var remaining = bounds;
-        var horizontal = bounds.Width >= bounds.Height;
+        var remaining = childrenBounds;
+        var horizontal = childrenBounds.Width >= childrenBounds.Height;
 
         foreach (var child in children)
         {
@@ -167,16 +181,25 @@ public sealed class TreemapControl : FrameworkElement
         }
     }
 
-    private void DrawLabel(DrawingContext drawingContext, StorageNode node, Rect bounds)
+    private bool CanDrawInlineLabel(Rect bounds)
+    {
+        return bounds.Width >= 34 && bounds.Height >= 15;
+    }
+
+    private void DrawLabel(DrawingContext drawingContext, StorageNode node, Rect bounds, WpfBrush textBrush, bool includeSize)
     {
         var dpi = VisualTreeHelper.GetDpi(this);
+        var fontSize = bounds.Height < 19 ? 9 : 11;
+        var label = includeSize
+            ? $"{node.Name}  {SizeFormatter.FormatBytes(node.Length)}"
+            : node.Name;
         var formatted = new FormattedText(
-            $"{node.Name}  {SizeFormatter.FormatBytes(node.Length)}",
+            label,
             CultureInfo.CurrentUICulture,
             WpfFlowDirection.LeftToRight,
             new Typeface("Segoe UI"),
-            12,
-            WpfBrushes.White,
+            fontSize,
+            textBrush,
             dpi.PixelsPerDip)
         {
             MaxTextWidth = Math.Max(0, bounds.Width - 8),
@@ -184,7 +207,15 @@ public sealed class TreemapControl : FrameworkElement
             Trimming = TextTrimming.CharacterEllipsis
         };
 
+        drawingContext.PushClip(new RectangleGeometry(bounds));
         drawingContext.DrawText(formatted, new WpfPoint(bounds.X + 4, bounds.Y + 4));
+        drawingContext.Pop();
+    }
+
+    private static WpfBrush GetTextBrush(MediaColor background)
+    {
+        var luminance = background.R * 0.299 + background.G * 0.587 + background.B * 0.114;
+        return luminance > 155 ? WpfBrushes.Black : WpfBrushes.White;
     }
 
     private static MediaColor GetColor(int depth, StorageNode node)
