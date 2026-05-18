@@ -1,0 +1,32 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+    <sys:String x:Key="AppTitle">SpaceSweeper</sys:String>
+    <sys:String x:Key="PathLabel">Path</sys:String>
+    <sys:String x:Key="BrowseButton">Browse</sys:String>
+    <sys:String x:Key="ScanButton">Scan</sys:String>
+    <sys:String x:Key="CancelButton">Cancel</sys:String>
+    <sys:String x:Key="CleanupButton">Clean</sys:String>
+    <sys:String x:Key="TreeTitle">Folder Tree</sys:String>
+    <sys:String x:Key="TreemapTitle">Treemap</sys:String>
+    <sys:String x:Key="ChildrenTitle">Current Folder</sys:String>
+    <sys:String x:Key="NameColumn">Name</sys:String>
+    <sys:String x:Key="SizeColumn">Size</sys:String>
+    <sys:String x:Key="FilesColumn">Files</sys:String>
+    <sys:String x:Key="FoldersColumn">Folders</sys:String>
+    <sys:String x:Key="StatusReady">Ready</sys:String>
+    <sys:String x:Key="StatusPreparing">Preparing scan...</sys:String>
+    <sys:String x:Key="StatusScanningFormat">Scanning: {0} items, {1} counted, {2} errors</sys:String>
+    <sys:String x:Key="StatusCompletedFormat">Done: {0}, total {1}, files {2}, folders {3}, errors {4}, {5:0.0}s</sys:String>
+    <sys:String x:Key="StatusCancelled">Cancelled</sys:String>
+    <sys:String x:Key="StatusFailed">Scan failed</sys:String>
+    <sys:String x:Key="StatusRescanRequired">Cleanup completed. The current scan result is stale; scan again.</sys:String>
+    <sys:String x:Key="FolderDialogDescription">Choose a folder to scan</sys:String>
+    <sys:String x:Key="ScanFailedTitle">Scan Failed</sys:String>
+    <sys:String x:Key="CleanupBlockedTitle">Cleanup Blocked</sys:String>
+    <sys:String x:Key="CleanupBlockedDefault">The path is blocked by safety policy.</sys:String>
+    <sys:String x:Key="CleanupConfirmTitle">Confirm Cleanup</sys:String>
+    <sys:String x:Key="CleanupConfirmFormat">Move {0} item(s) to the Recycle Bin and reclaim about {1}. Blocked items: {2}. Continue?</sys:String>
+    <sys:String x:Key="CleanupCompleteTitle">Cleanup Complete</sys:String>
+    <sys:String x:Key="CleanupCompleteFormat">Processed {0} item(s), {1} failure(s).</sys:String>
+</ResourceDictionary>
